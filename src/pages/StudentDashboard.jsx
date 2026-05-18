@@ -1,165 +1,372 @@
+import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
-import { useGamification } from '../hooks/useGamification';
-import { Trophy, Star, Target, ChevronLeft, Play, PieChart, Scale, Rocket, Puzzle } from 'lucide-react';
+import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import DailyMissions from '../components/DailyMissions';
+import Leaderboard from '../components/Leaderboard';
+import BadgeDisplay from '../components/BadgeDisplay';
+import LevelUpModal from '../components/LevelUpModal';
 
-function StudentDashboard() {
-  const { progress, xpToNext, totalXpForNextLevel } = useGamification();
-  
-  const progressPercent = ((totalXpForNextLevel - xpToNext) / totalXpForNextLevel) * 100;
+const GRADE_ZONES = [
+  {
+    grade: 2, label: 'Grade 2', emoji: '🌾', title: 'Sunflower Farm',
+    desc: 'Counting · Addition · Shapes',
+    gradient: 'linear-gradient(135deg, #92400e 0%, #78350f 50%, #451a03 100%)',
+    glow: '#f59e0b', accent: '#fbbf24', textColor: '#fde68a',
+    scenery: '🌻🌻🌾🌾🚜',
+    games: [
+      { id: 'arithmetic', name: 'Number Ninja', emoji: '🎯', xp: 50, path: '/games/arithmetic', difficulty: 1 },
+      { id: 'number-catcher', name: 'Number Catcher', emoji: '🥥', xp: 40, path: '/games/number-catcher', difficulty: 1 },
+      { id: 'balloon-pop', name: 'Balloon Pop', emoji: '🎈', xp: 45, path: '/games/balloon-pop', difficulty: 1 },
+      { id: 'geometry', name: 'Shape Explorer', emoji: '📐', xp: 60, path: '/games/geometry', difficulty: 2 },
+    ],
+  },
+  {
+    grade: 3, label: 'Grade 3', emoji: '🏪', title: 'Village Market',
+    desc: 'Multiplication · Fractions · Data',
+    gradient: 'linear-gradient(135deg, #7c2d12 0%, #9a3412 50%, #431407 100%)',
+    glow: '#f97316', accent: '#fb923c', textColor: '#fed7aa',
+    scenery: '🛒🏪🌶️🥭🍎',
+    games: [
+      { id: 'meteor', name: 'Multiplication Meteor', emoji: '☄️', xp: 75, path: '/games/meteor', difficulty: 2 },
+      { id: 'fractions', name: 'Fraction Frenzy', emoji: '🍕', xp: 50, path: '/games/fractions', difficulty: 2 },
+      { id: 'farm-multiply', name: 'Multiplication Farm', emoji: '🌻', xp: 65, path: '/games/farm-multiply', difficulty: 2 },
+      { id: 'math-racing', name: 'Math Racing', emoji: '🐂', xp: 70, path: '/games/math-racing', difficulty: 2 },
+    ],
+  },
+  {
+    grade: 4, label: 'Grade 4', emoji: '🌊', title: 'River Crossing',
+    desc: 'Decimals · Factors · Geometry',
+    gradient: 'linear-gradient(135deg, #1e3a5f 0%, #1e40af 50%, #1e3a8a 100%)',
+    glow: '#38bdf8', accent: '#7dd3fc', textColor: '#bae6fd',
+    scenery: '🌊🐟🚤⛵🌴',
+    games: [
+      { id: 'balancer', name: 'Equation Balancer', emoji: '⚖️', xp: 75, path: '/games/balancer', difficulty: 3 },
+      { id: 'decimal-mall', name: 'Decimal Mall', emoji: '🛒', xp: 80, path: '/games/decimal-mall', difficulty: 3 },
+      { id: 'fraction-ninja', name: 'Fraction Ninja', emoji: '🥷', xp: 85, path: '/games/fraction-ninja', difficulty: 3 },
+    ],
+  },
+  {
+    grade: 5, label: 'Grade 5', emoji: '🌲', title: 'Forest Camp',
+    desc: 'Percentages · Coordinates · Patterns',
+    gradient: 'linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%)',
+    glow: '#22c55e', accent: '#4ade80', textColor: '#bbf7d0',
+    scenery: '🌲🦋⛺🔭🌿',
+    games: [
+      { id: 'patterns', name: 'Pattern Puzzle', emoji: '🧩', xp: 80, path: '/games/patterns', difficulty: 3 },
+      { id: 'coordinate-treasure', name: 'Treasure Map', emoji: '🗺️', xp: 90, path: '/games/coordinate-treasure', difficulty: 3 },
+    ],
+  },
+  {
+    grade: 6, label: 'Grade 6', emoji: '⛰️', title: 'Mountain Peak',
+    desc: 'Integers · Algebra · Ratios',
+    gradient: 'linear-gradient(135deg, #2e1065 0%, #4c1d95 50%, #1e1b4b 100%)',
+    glow: '#a78bfa', accent: '#c4b5fd', textColor: '#ddd6fe',
+    scenery: '🏔️⛰️🗻🦅❄️',
+    games: [
+      { id: 'integer-mountain', name: 'Integer Mountain', emoji: '🏔️', xp: 100, path: '/games/integer-mountain', difficulty: 4 },
+      { id: 'algebra-dungeon', name: 'Algebra Dungeon', emoji: '🗝️', xp: 110, path: '/games/algebra-dungeon', difficulty: 4 },
+    ],
+  },
+];
 
+function DifficultyDots({ level }) {
   return (
-    <div className="animate-fade-in-up pb-8">
-      <header className="flex justify-between items-center mb-8">
-        <Link to="/" className="btn btn-glass px-4 py-2">
-          <ChevronLeft size={20} /> Back
-        </Link>
-        <h2 className="text-2xl font-semibold">My Journey</h2>
-      </header>
-
-      <div className="glass-card p-6 mb-8 relative overflow-hidden">
-        <div className="absolute -top-5 -right-5 opacity-10">
-          <Trophy size={150} />
-        </div>
-        
-        <div className="flex items-center gap-5 mb-6">
-          <div className="w-20 h-20 rounded-full bg-gradient-to-br from-primary to-secondary flex items-center justify-center text-3xl font-bold">
-            L{progress.level}
-          </div>
-          <div>
-            <h3 className="text-2xl mb-1 font-semibold">Level {progress.level} Scholar</h3>
-            <p className="text-slate-300">{progress.xp} Total XP</p>
-          </div>
-        </div>
-        
-        <div>
-          <div className="flex justify-between text-sm mb-2 font-medium">
-            <span>Progress to Level {progress.level + 1}</span>
-            <span>{xpToNext} XP needed</span>
-          </div>
-          <div className="w-full h-3 bg-white/10 rounded-full overflow-hidden">
-            <div 
-              className="h-full bg-gradient-to-r from-primary to-accent rounded-full transition-all duration-500 ease-in-out"
-              style={{ width: `${Math.max(5, progressPercent)}%` }}
-            ></div>
-          </div>
-        </div>
-      </div>
-
-      <h3 className="mb-4 text-xl font-semibold">Learning Games</h3>
-      
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-        
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-primary/20 rounded-xl text-primary">
-              <Target size={32} />
-            </div>
-            <span className="badge badge-primary">+50 XP</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Number Ninja</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Master basic arithmetic (addition and subtraction) in this fast-paced 30s challenge.
-          </p>
-          <Link to="/games/arithmetic" className="no-underline w-full">
-            <button className="btn btn-primary w-full">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-success/20 rounded-xl text-success">
-              <Star size={32} />
-            </div>
-            <span className="badge badge-success">+100 XP</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Geometry Explorer</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Visually match patterns and learn properties of shapes in an interactive environment.
-          </p>
-          <Link to="/games/geometry" className="no-underline w-full">
-            <button className="btn btn-success w-full">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-secondary/20 rounded-xl text-secondary">
-              <PieChart size={32} />
-            </div>
-            <span className="badge bg-secondary/20 text-secondary border-secondary">+50 XP</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Fraction Frenzy</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Match the fractions to their visual pie chart representations quickly.
-          </p>
-          <Link to="/games/fractions" className="no-underline w-full">
-            <button className="btn bg-secondary text-white w-full hover:bg-fuchsia-400">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-blue-500/20 rounded-xl text-blue-400">
-              <Scale size={32} />
-            </div>
-            <span className="badge bg-blue-500/20 text-blue-400 border-blue-400">+15 XP / eq</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Equation Balancer</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Drag and drop weights to balance the algebraic seesaw scales.
-          </p>
-          <Link to="/games/balancer" className="no-underline w-full">
-            <button className="btn bg-blue-500 text-white w-full hover:bg-blue-400">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-danger/20 rounded-xl text-danger">
-              <Rocket size={32} />
-            </div>
-            <span className="badge badge-danger">Survival</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Multiplication Meteor</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Type the answers fast to destroy the falling multiplication meteors!
-          </p>
-          <Link to="/games/meteor" className="no-underline w-full">
-            <button className="btn btn-danger w-full">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-        <div className="glass-card p-6 flex flex-col">
-          <div className="flex items-start justify-between mb-4">
-            <div className="p-3 bg-warning/20 rounded-xl text-warning">
-              <Puzzle size={32} />
-            </div>
-            <span className="badge badge-warning">+125 XP</span>
-          </div>
-          <h4 className="text-xl font-semibold mb-2">Pattern Puzzle</h4>
-          <p className="text-slate-300 text-sm mb-6 flex-1">
-            Deduce the logical rule behind the sequence of numbers to progress.
-          </p>
-          <Link to="/games/patterns" className="no-underline w-full">
-            <button className="btn bg-warning text-yellow-900 w-full hover:bg-yellow-300">
-              <Play size={18} fill="currentColor" /> Play Now
-            </button>
-          </Link>
-        </div>
-
-      </div>
+    <div className="flex gap-0.5">
+      {[1,2,3,4].map(i => (
+        <div key={i} className="w-1.5 h-1.5 rounded-full" style={{ background: i <= level ? '#fbbf24' : 'rgba(255,255,255,0.2)' }} />
+      ))}
     </div>
   );
 }
 
-export default StudentDashboard;
+function ZoneCard({ zone, userGrade, index }) {
+  const isUnlocked = true; // Temporary: force unlock all zones for testing (normally userGrade >= zone.grade)
+  const [expanded, setExpanded] = useState(index === 0);
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.08, type: 'spring', stiffness: 80 }}
+      className={`relative overflow-hidden rounded-xl border-2 border-white/80 shadow-[0_4px_12px_rgb(0,0,0,0.05)] transition-all duration-300 mb-2 backdrop-blur-sm ${!isUnlocked ? 'grayscale opacity-60' : 'hover:shadow-[0_8px_20px_rgb(0,0,0,0.08)] hover:border-white'}`}
+      style={{ background: 'rgba(255,255,255,0.92)' }}
+    >
+      <div className="p-2.5 sm:p-3 cursor-pointer" onClick={() => isUnlocked && setExpanded(!expanded)}>
+        <div className="flex items-start justify-between gap-3 sm:gap-5">
+          <div className="flex items-start gap-3 sm:gap-5 flex-1 min-w-0">
+            {/* Zone Icon */}
+            <motion.div 
+              whileHover={{ scale: 1.08, rotate: 5 }}
+              className="w-12 h-12 rounded-2xl flex items-center justify-center text-2xl sm:text-3xl shadow-md flex-shrink-0"
+              style={{ 
+                background: zone.glow + '20',
+                borderLeft: `4px solid ${zone.glow}`
+              }}
+            >
+              {zone.emoji}
+            </motion.div>
+            
+            {/* Zone Info */}
+            <div className="flex-1 min-w-0 pt-1">
+              <div className="flex items-center gap-2 mb-1 flex-wrap">
+                <h3 className="font-display font-black text-base sm:text-xl text-[#1e293b] leading-tight">{zone.title}</h3>
+                {!isUnlocked && <span className="text-[10px] sm:text-xs font-black px-2 py-1 rounded-full bg-[#FEE2E2] text-[#DC2626]">🔒 LOCKED</span>}
+              </div>
+              <p className="text-xs sm:text-sm font-bold text-[#64748b] opacity-80">{zone.desc}</p>
+            </div>
+          </div>
+          
+          {/* Expand Toggle */}
+          {isUnlocked && (
+            <motion.div 
+              animate={{ rotate: expanded ? 180 : 0 }}
+              transition={{ duration: 0.3 }}
+              className="w-9 h-9 sm:w-10 sm:h-10 rounded-full flex items-center justify-center bg-gradient-to-br from-[#FFCA42]/10 to-[#FF7052]/10 text-[#FF7052] flex-shrink-0 font-black"
+            >
+              ▼
+            </motion.div>
+          )}
+        </div>
+
+      </div>
+
+      <AnimatePresence>
+        {isUnlocked && expanded && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.3 }}
+            className="px-2.5 sm:px-3 pb-3 sm:pb-4 border-t border-white/60"
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 mt-2 sm:mt-3">
+              {zone.games.map((game, gi) => (
+                <Link key={game.id} to={game.path} className="no-underline">
+                  <motion.div
+                    whileHover={{ scale: 1.03, y: -3 }}
+                    whileTap={{ scale: 0.98 }}
+                    className="group/game flex flex-col p-2 sm:p-3 rounded-lg bg-gradient-to-br from-white via-[#F9FAFB] to-[#F7F9FC] hover:from-[#FFFBF0] hover:to-[#F0F9FF] border-2 border-white/70 hover:border-white shadow-sm hover:shadow-[0_4px_12px_rgb(0,0,0,0.06)] transition-all cursor-pointer"
+                  >
+                    <div className="flex items-start gap-2 mb-1.5">
+                      <motion.div 
+                        whileHover={{ scale: 1.1 }}
+                        className="w-8 h-8 rounded-lg bg-white flex items-center justify-center text-sm shadow-sm flex-shrink-0 border border-white/50 group-hover/game:shadow-[0_2px_8px_rgba(255,202,66,0.2)]"
+                      >
+                        {game.emoji}
+                      </motion.div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-black text-[#1e293b] text-xs leading-snug group-hover/game:text-[#FF7052] transition-colors">{game.name}</p>
+                        <DifficultyDots level={game.difficulty} />
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-gradient-to-r from-[#E8F9F8] to-[#F0FFFE] text-[#5EDAD0] border border-[#5EDAD0]/20 shadow-sm whitespace-nowrap">
+                        +{game.xp} XP
+                      </span>
+                      <motion.span 
+                        animate={{ x: [0, 3, 0] }}
+                        transition={{ duration: 2, repeat: Infinity }}
+                        className="text-xs text-[#FFCA42] font-black opacity-60 group-hover/game:opacity-100 transition-opacity"
+                      >
+                        →
+                      </motion.span>
+                    </div>
+                  </motion.div>
+                </Link>
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+}
+
+export default function StudentDashboard() {
+  const { xp, level, coins, streak, avatar, badges, gamesPlayed, history = [] } = usePlayerStore();
+  const { user } = useAuthStore();
+  const userGrade = user?.grade || 2;
+
+  const xpForLevel = (lvl) => Math.pow(lvl, 2) * 100;
+  const xpForPrev  = (lvl) => Math.pow(Math.max(1, lvl - 1), 2) * 100;
+  const currentXPInRange = xp - xpForPrev(level);
+  const xpRange = xpForLevel(level) - xpForPrev(level);
+  const progressPct = Math.max(0, Math.min(100, Math.round((currentXPInRange / xpRange) * 100))) || 0;
+  const xpToNext = xpForLevel(level) - xp;
+
+  return (
+    <div className="pb-20 pt-2 md:pt-4 max-w-5xl mx-auto px-3 md:px-6 bg-[#F7F9FC]">
+      <LevelUpModal />
+
+      {/* ── NEW HERO BANNER (Professional Mobile Style) ── */}
+      <motion.div initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }}
+        className="bg-white rounded-2xl shadow-[0_8px_30px_rgb(0,0,0,0.04)] mb-4 overflow-hidden border border-white"
+      >
+        <div className="p-3 sm:p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 relative overflow-hidden">
+          {/* Decorative background element for mobile */}
+          <div className="absolute top-0 right-0 w-32 h-32 bg-gradient-to-bl from-[#FFCA42]/10 to-transparent rounded-bl-full pointer-events-none" />
+          
+          <div className="flex items-center gap-4 sm:gap-6 relative z-10">
+            {/* Avatar Circle */}
+            <motion.div 
+              whileHover={{ scale: 1.05 }}
+              className="w-12 h-12 sm:w-16 sm:h-16 rounded-full flex items-center justify-center text-xl sm:text-3xl relative shadow-lg bg-[#FFCA42] border-3 border-white shrink-0"
+            >
+              {avatar}
+              <div className="absolute -bottom-1 -right-1 w-5 h-5 sm:w-6 sm:h-6 rounded-full border-2 border-white flex items-center justify-center text-[9px] sm:text-xs font-black text-white bg-[#FF7052] shadow-md">
+                {level}
+              </div>
+            </motion.div>
+
+            <div className="overflow-hidden">
+              <p className="text-[#64748b] font-bold text-[11px] sm:text-sm mb-0 opacity-70 uppercase tracking-wider">Good Afternoon!</p>
+              <h2 className="font-display font-black text-base sm:text-lg text-[#1e293b] leading-tight truncate">
+                {user?.name || 'Explorer'} <span className="text-[#FF7052]">✨</span>
+              </h2>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                <span className="px-2.5 py-0.5 rounded-full text-[9px] sm:text-xs font-black bg-[#E8F9F8] text-[#5EDAD0] border border-[#5EDAD0]/20 shadow-sm">
+                  GRADE {userGrade}
+                </span>
+                {streak > 0 && (
+                  <span className="px-2.5 py-0.5 rounded-full text-[9px] sm:text-xs font-black bg-[#FFF9E6] text-[#FFCA42] border border-[#FFCA42]/20 shadow-sm">
+                    🔥 {streak} DAY STREAK
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {/* XP Progress Card */}
+          <div className="bg-[#F7F9FC]/80 backdrop-blur-sm p-2.5 sm:p-3 rounded-lg md:w-64 border border-white/50 shadow-inner">
+            <div className="flex justify-between items-end mb-1.5 gap-2">
+              <span className="text-[9px] sm:text-xs font-black text-[#64748b] uppercase tracking-wide">Level {level}</span>
+              <span className="text-[9px] sm:text-xs font-black text-[#FF7052]">{progressPct}%</span>
+            </div>
+            <div className="h-2 sm:h-2.5 w-full bg-white rounded-full overflow-hidden border border-slate-100 p-0.5">
+              <motion.div 
+                className="h-full rounded-full bg-gradient-to-r from-[#FFCA42] to-[#FF7052] relative"
+                initial={{ width: 0 }}
+                animate={{ width: `${progressPct}%` }}
+                transition={{ duration: 1.2, ease: "circOut" }}
+              />
+            </div>
+            <p className="text-[7px] sm:text-[8px] text-center mt-1 font-black text-[#94a3b8] uppercase tracking-tight">
+              {xpToNext} XP to next
+            </p>
+          </div>
+        </div>
+
+        {/* Quick Stats Grid */}
+        <div className="grid grid-cols-3 border-t border-slate-50 bg-[#fbfcfe]/50">
+          {[
+            { label: 'Total XP', val: xp, icon: '⭐' },
+            { label: 'Coins', val: coins, icon: '🪙' },
+            { label: 'Badges', val: badges.length, icon: '🏅' }
+          ].map((stat, idx) => (
+            <div key={idx} className={`py-2 flex flex-col items-center justify-center ${idx < 2 ? 'border-r border-slate-50' : ''}`}>
+              <span className="text-sm sm:text-base mb-0.5 drop-shadow-sm">{stat.icon}</span>
+              <span className="text-xs sm:text-sm font-black text-[#1e293b]">{stat.val.toLocaleString()}</span>
+              <span className="text-[7px] sm:text-[8px] font-black text-[#94a3b8] uppercase tracking-widest">{stat.label}</span>
+            </div>
+          ))}
+        </div>
+      </motion.div>
+
+      {/* ── MAIN LAYOUT ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3 sm:gap-4 mt-4 sm:mt-6">
+
+        {/* LEFT: Village Map */}
+        <div className="lg:col-span-2 space-y-2 sm:space-y-4">
+          <motion.div initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}
+            className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-1 sm:px-0 mb-1 sm:mb-2">
+            <div className="flex items-center gap-2">
+              <span className="text-lg sm:text-xl drop-shadow-sm">🗺️</span>
+              <div>
+                <h2 className="font-display font-black text-base sm:text-lg text-[#1e293b] leading-tight">Continue Learning</h2>
+                <p className="text-[11px] text-[#64748b] font-bold mt-0">Complete zones to unlock new challenges</p>
+              </div>
+            </div>
+            <motion.div animate={{ scale: [1, 1.1, 1] }} transition={{ duration: 2, repeat: Infinity }} className="flex items-center gap-1.5 bg-gradient-to-r from-[#E8F9F8]/50 to-transparent px-2 py-1 rounded-full border border-[#5EDAD0]/20 w-fit">
+              <div className="w-1.5 h-1.5 rounded-full bg-[#5EDAD0] animate-pulse" />
+              <span className="text-[9px] text-[#5EDAD0] font-black uppercase tracking-wider whitespace-nowrap">{GRADE_ZONES.length}/5 unlocked</span>
+            </motion.div>
+          </motion.div>
+
+          {GRADE_ZONES.map((zone, i) => (
+            <ZoneCard key={zone.grade} zone={zone} userGrade={userGrade} index={i} />
+          ))}
+        </div>
+
+        {/* RIGHT: Sidebar */}
+        <div className="space-y-3 sm:space-y-4">
+          {/* Daily Missions */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+            <DailyMissions />
+          </motion.div>
+
+          {/* Leaderboard */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
+            className="bg-white rounded-xl overflow-hidden border-2 border-white/80 shadow-[0_4px_12px_rgb(0,0,0,0.04)] hover:shadow-[0_6px_16px_rgb(0,0,0,0.08)] transition-all"
+          >
+            <div className="px-3 py-2.5 flex items-center justify-between border-b border-white/60 bg-gradient-to-r from-[#FFFBF0]/30 to-transparent">
+              <div className="flex items-center gap-1.5">
+                <span className="text-base drop-shadow-sm">🏆</span>
+                <h3 className="font-display font-black text-sm text-[#1e293b]">Top Players</h3>
+              </div>
+              <Link to="/student/leaderboard" className="text-[9px] font-black no-underline px-2 py-1 rounded-full bg-gradient-to-r from-[#FFE8E6] to-[#FFEDE6] text-[#FF7052] hover:from-[#FFD8CE] hover:to-[#FFDCC4] transition-all shadow-sm border border-[#FF7052]/15">
+                View All →
+              </Link>
+            </div>
+            <div className="p-2">
+              <Leaderboard compact />
+            </div>
+          </motion.div>
+
+          {/* Badges */}
+          <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.5 }}
+            className="bg-white rounded-xl border border-white/80 shadow-sm overflow-hidden"
+          >
+            <div className="px-3 py-2.5 flex items-center justify-between border-b border-slate-100">
+              <div className="flex items-center gap-2">
+                <span className="text-base">🏅</span>
+                <h3 className="font-display font-black text-sm text-[#1e293b]">Achievements</h3>
+              </div>
+              <Link to="/student/profile" className="text-[9px] font-black no-underline px-2.5 py-1 rounded-lg bg-[#F7F9FC] text-[#FFCA42] hover:bg-[#FFCA42]/5 transition-colors">
+                View All
+              </Link>
+            </div>
+            <div className="p-2">
+              <BadgeDisplay compact />
+            </div>
+          </motion.div>
+
+          {/* Recent activity */}
+          {Array.isArray(history) && history.length > 0 && (
+            <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.6 }}
+              className="bg-white rounded-xl border border-white/80 shadow-sm overflow-hidden"
+            >
+              <div className="px-3 py-2.5 border-b border-slate-100 flex items-center gap-2">
+                <span className="text-base">📜</span>
+                <h3 className="font-display font-black text-sm text-[#1e293b]">Recent Games</h3>
+              </div>
+              <div className="p-2 space-y-1.5">
+                {history.slice(0, 5).map((h, i) => (
+                  <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.05 }}
+                    className="flex items-center gap-2 rounded-lg p-2 bg-[#F7F9FC] hover:bg-white transition-all border border-transparent hover:border-slate-100 hover:shadow-sm">
+                    <span className="text-sm">🎮</span>
+                    <span className="flex-1 text-xs text-[#1e293b] truncate font-bold">{h.gameName}</span>
+                    <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-white text-[#5EDAD0] shadow-sm whitespace-nowrap">
+                      +{h.xpEarned}
+                    </span>
+                  </motion.div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

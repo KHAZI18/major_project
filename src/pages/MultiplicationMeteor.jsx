@@ -20,6 +20,7 @@ function MultiplicationMeteor() {
   const [score, setScore] = useState(0);
   const [health, setHealth] = useState(3);
   const [inputValue, setInputValue] = useState('');
+  const [turretAngle, setTurretAngle] = useState(0);
   
   const inputRef = useRef(null);
   const fallRate = Math.min(2.5, 0.3 + score / 40); // Base rate 0.3 (very slow), scales up as player gets further
@@ -32,6 +33,7 @@ function MultiplicationMeteor() {
     setScore(0);
     setHealth(3);
     setInputValue('');
+    setTurretAngle(0);
     setTimeout(() => inputRef.current?.focus(), 100);
   };
 
@@ -103,11 +105,13 @@ function MultiplicationMeteor() {
       // Spawn laser & explosion visuals
       setLasers(prev => [...prev, { id: hitId, angle }]);
       setExplosions(prev => [...prev, { id: hitId, top: target.top, left: target.left, type: 'destroy' }]);
+      setTurretAngle(angle);
       
       // Remove visual effects after 300ms
       setTimeout(() => {
          setLasers(prev => prev.filter(l => l.id !== hitId));
          setExplosions(prev => prev.filter(ex => ex.id !== hitId));
+         setTurretAngle(0); // Reset turret to face forward after firing lock
       }, 300);
 
       setMeteors(prev => prev.filter((_, idx) => idx !== hitMeteorIndex));
@@ -186,10 +190,10 @@ function MultiplicationMeteor() {
            {lasers.map(l => (
               <div 
                 key={`laser-${l.id}`}
-                className="absolute bg-accent opacity-80 z-20 shadow-[0_0_20px_rgba(244,114,182,1)]"
+                className="absolute bg-success opacity-90 z-20 shadow-[0_0_20px_rgba(34,197,94,1)]"
                 style={{ 
                    left: '50%', bottom: '20px', 
-                   height: '200vh', width: '8px', 
+                   height: '200vh', width: '12px', 
                    transformOrigin: 'bottom center',
                    transform: `translateX(-50%) rotate(${l.angle}deg)`,
                 }}
@@ -216,10 +220,13 @@ function MultiplicationMeteor() {
         <div className="h-36 bg-slate-900 border-t-4 border-accent shadow-[0_-10px_40px_rgba(244,114,182,0.15)] z-20 flex flex-col items-center justify-center relative rounded-t-[3rem]">
              {/* Cannon Body */}
              <div className="absolute -top-12 left-1/2 -translate-x-1/2 flex flex-col items-center">
-                <div className="w-8 h-12 bg-slate-300 rounded-t-full shadow-[0_0_15px_rgba(255,255,255,0.5)] z-20 group">
+                <div 
+                    className="w-8 h-12 bg-slate-300 rounded-t-full shadow-[0_0_15px_rgba(255,255,255,0.5)] z-20 group transition-transform duration-200 ease-out origin-bottom"
+                    style={{ transform: `rotate(${turretAngle}deg)` }}
+                >
                     <div className="w-full h-full bg-accent opacity-0 group-hover:opacity-50 transition-opacity rounded-t-full blur-sm"></div>
                 </div>
-                <div className="w-24 h-16 bg-slate-800 border-t-2 border-x-2 border-white/10 rounded-t-full flex items-center justify-center">
+                <div className="w-24 h-16 bg-slate-800 border-t-2 border-x-2 border-white/10 rounded-t-full flex items-center justify-center -mt-2 z-10">
                    <Crosshair className="text-accent opacity-50" size={32} />
                 </div>
              </div>
