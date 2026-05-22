@@ -42,3 +42,6 @@ data/dkt_sequences.npz
 
 # Env files / secrets — root .env and server/.env (one .env lives in the repo root)
 .env
+
+# Seeded test-account credentials (contains passwords — never commit)
+seed-students-credentials.md
