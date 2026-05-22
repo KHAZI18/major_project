@@ -12,7 +12,6 @@
   "dependencies": {
     "@react-oauth/google": "^0.13.5",
     "@tailwindcss/vite": "^4.2.2",
-    "axios": "^1.16.1",
     "canvas-confetti": "^1.9.4",
     "framer-motion": "^12.38.0",
     "idb": "^8.0.3",

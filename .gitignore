@@ -22,3 +22,9 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Env files / secrets — never commit
+.env
+
+# Seeded test-account credentials (passwords)
+seed-students-credentials.md
