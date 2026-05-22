@@ -4,6 +4,16 @@ import { ArrowLeft, CheckCircle2, Grid3X3, RotateCcw, ShieldAlert, Sparkles, Tim
 import { useGamification } from '../hooks/useGamification';
 import { useAuthStore } from '../store/useAuthStore';
 import { normalizeGrade } from '../lib/gradeUtils';
+import { getNextDifficulty, recordAttempt } from '../engine/engineAPI';
+import { skillForGame } from '../engine/gameSkills';
+
+const SKILL = skillForGame('PatternPuzzle'); // 'patterns'
+const DIFFICULTY_START = { easy: 0, medium: 1, hard: 2 }; // engine string -> starting rule offset
+// Seed the first puzzle's rule selection from the adaptive learning engine. This
+// only nudges which rule appears first; it does not change the round counter or UI.
+function startSeedFromEngine() {
+  return DIFFICULTY_START[getNextDifficulty(SKILL)] ?? 0;
+}
 
 const RULES = [
   {
@@ -186,7 +196,7 @@ export default function PatternPuzzle() {
 
   const totalRounds = grade <= 2 ? 5 : grade === 3 ? 6 : grade === 4 ? 7 : 8;
   const [roundIndex, setRoundIndex] = useState(0);
-  const [puzzle, setPuzzle] = useState(() => generatePuzzle(grade, 0));
+  const [puzzle, setPuzzle] = useState(() => generatePuzzle(grade, startSeedFromEngine()));
   const [selectedCell, setSelectedCell] = useState(null);
   const [selectedOption, setSelectedOption] = useState(null);
   const [score, setScore] = useState(0);
@@ -200,7 +210,7 @@ export default function PatternPuzzle() {
   const locked = status !== 'playing';
   const restart = () => {
     setRoundIndex(0);
-    setPuzzle(generatePuzzle(grade, 0));
+    setPuzzle(generatePuzzle(grade, startSeedFromEngine()));
     setSelectedCell(null);
     setSelectedOption(null);
     setScore(0);
@@ -254,7 +264,10 @@ export default function PatternPuzzle() {
     if (locked || !selectedCell) return;
     setSelectedOption(value);
 
-    if (value === puzzle.solution) {
+    const correct = value === puzzle.solution;
+    recordAttempt({ skillId: SKILL, correct, responseTime: 0 });
+
+    if (correct) {
       const nextScore = score + 1;
       const nextStreak = streak + 1;
       setScore(nextScore);

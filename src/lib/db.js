@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 
 const DB_NAME = 'math_village_db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise = null;
 const pendingSyncWrites = new Set();
@@ -44,6 +44,18 @@ export function getDB() {
         // Achievements / badges
         if (!db.objectStoreNames.contains('achievements')) {
           db.createObjectStore('achievements', { keyPath: 'id' });
+        }
+        // Adaptive engine: per-student mastery state (single 'local' record)
+        if (!db.objectStoreNames.contains('mastery_state')) {
+          db.createObjectStore('mastery_state', { keyPath: 'id' });
+        }
+        // Adaptive engine: append-only interaction log (DKT sequence input)
+        if (!db.objectStoreNames.contains('interaction_log')) {
+          const il = db.createObjectStore('interaction_log', {
+            keyPath: 'logId',
+            autoIncrement: true,
+          });
+          il.createIndex('by_timestamp', 'timestamp');
         }
       },
     });
@@ -116,4 +128,29 @@ export async function saveAchievement(achievement) {
 export async function getAllAchievements() {
   const db = await getDB();
   return db.getAll('achievements');
+}
+
+// ─── Adaptive Engine: Mastery State ─────────────────────────────────────────────
+
+export async function saveMasteryState(state) {
+  const db = await getDB();
+  await db.put('mastery_state', { id: 'local', ...state });
+}
+
+export async function loadMasteryState() {
+  const db = await getDB();
+  return db.get('mastery_state', 'local');
+}
+
+// ─── Adaptive Engine: Interaction Log ───────────────────────────────────────────
+
+export async function appendInteraction(interaction) {
+  const db = await getDB();
+  await db.add('interaction_log', { ...interaction });
+}
+
+export async function getInteractionLog(limit = 50) {
+  const db = await getDB();
+  const all = await db.getAllFromIndex('interaction_log', 'by_timestamp');
+  return all.slice(-limit); // oldest -> newest, last `limit`
 }

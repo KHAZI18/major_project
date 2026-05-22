@@ -31,6 +31,12 @@ const ProgressSchema = new mongoose.Schema({
     timestamp: { type: Date, default: Date.now }
   }],
   achievements: [String],
+  // Adaptive engine (spec §7): free-form per-student mastery snapshot.
+  // Stored as Mixed so the server stays agnostic to the BKT/DKT belief shape.
+  masteryState: { type: mongoose.Schema.Types.Mixed, default: {} },
+  // Adaptive engine (spec §7): append-only interaction records
+  // ({ skillId, correct, responseTime, timestamp }); server does not validate element shape.
+  interactionLog: { type: [mongoose.Schema.Types.Mixed], default: [] },
   assignedSupport: {
     gameId: { type: String, default: null },
     topic: { type: String, default: null },
