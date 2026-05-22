@@ -22,3 +22,20 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Code worktrees / local settings
+.claude/
+
+# Python (synthetic data + evaluation harness)
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/synthetic/
+data/dkt_sequences.npz
+*.parquet
+*.npz
+# but DO track a tiny committed sample dataset for smoke verification
+!data/sample/
+!data/sample/*.parquet
+!data/sample/*.npz
