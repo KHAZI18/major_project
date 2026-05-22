@@ -25,7 +25,9 @@ import { GAME_SKILLS, SKILL_IDS } from '../engine/knowledgeGraph';
 // GAME_SKILLS.ArithmeticGame === ['addition','subtraction'], GAME_SKILLS.MultiplicationMeteor === ['multiplication'], etc.
 ```
 
-**Explicitly OUT of scope for this plan** (each is a later plan or already done): the engine core itself (already built + tested), `src/store/usePlayerStore.js`'s `addXP` engine hook (deferred — see Open Questions; games call `recordAttempt` directly so XP flow stays untouched), StudentDashboard / TeacherDashboard widgets (§7 dashboard rows — separate plans), the Express/Mongo backend (§7 server rows), the DKT pipeline, and the 12 non-top-8 games (v2).
+**Explicitly OUT of scope for this plan** (each is a later plan or already done): the engine core layers behind the public API (already built + tested — `masteryModel.js`, `decisionLayer.js`, `knowledgeGraph.js`), `src/store/usePlayerStore.js`'s `addXP` engine hook (deferred — see Open Questions; games call `recordAttempt` directly so XP flow stays untouched), StudentDashboard / TeacherDashboard widgets (§7 dashboard rows — separate plans), the **server-side** `/api/sync` `MASTERY_UPDATE` handler + Mongo schema fields + `syncEngine` op-type recognition (§7 server rows — owned by the sibling **backend-mastery-sync** plan), the DKT pipeline, and the 12 non-top-8 games (v2).
+
+**IN scope (cross-plan producer this plan owns):** `engineAPI.recordAttempt` is extended to **enqueue** a `MASTERY_UPDATE` sync op whenever mastery changes (Task 3b). `engineAPI.js` is the public engine surface (not a locked internal layer), so editing it is permitted. The op's transport, server merge, and Mongo persistence are handled by the backend-mastery-sync plan; this plan only **produces** the op, mirroring how `usePlayerStore.addXP` already produces `GAME_SESSION` ops.
 
 ---
 
@@ -38,6 +40,8 @@ import { GAME_SKILLS, SKILL_IDS } from '../engine/knowledgeGraph';
 | `src/App.jsx` | Call `initEngine()` once in the existing startup `useEffect` | modify |
 | `src/engine/gameSkills.js` | Tiny helper: `skillForGame(name)` (primary skill picker) so games stay one-liners | create |
 | `src/engine/gameSkills.test.js` | Unit test for the helper | create |
+| `src/engine/engineAPI.js` | `recordAttempt` also enqueues a `MASTERY_UPDATE` sync op after `saveMasteryState` (Task 3b) | modify |
+| `src/engine/engineAPI.sync.test.js` | Unit test: `recordAttempt` enqueues exactly one `MASTERY_UPDATE` op (Task 3b) | create |
 | `src/pages/ArithmeticGame.jsx` | Difficulty default + `recordAttempt` on each answer | modify |
 | `src/pages/MultiplicationMeteor.jsx` | `recordAttempt` per meteor hit/miss; difficulty unused (fixed gen) — see task | modify |
 | `src/pages/FractionFrenzy.jsx` | `recordAttempt` per option click | modify |
@@ -326,6 +330,146 @@ git commit -m "feat(app): initialize adaptive engine once at startup"
 
 ---
 
+### Task 3b: Enqueue a `MASTERY_UPDATE` sync op when mastery changes (engineAPI producer)
+
+**Why this lives here (cross-plan contract):** The whole point of Tasks 4–11 is that playing a game updates mastery. But today `engineAPI.recordAttempt` (verified, current source) calls `appendInteraction(...)` + `saveMasteryState(s)` and then **stops** — it never tells the offline sync queue that mastery changed, so a student's mastery never reaches the server. The sibling **backend-mastery-sync** plan adds (a) the `masteryState`/`interactionLog` Mongo fields, (b) the additive `/api/sync` merge, and (c) the `MASTERY_UPDATE` op recognition in `syncEngine.sendToAPI`, and it **explicitly defers the producer to this plan** (backend plan, verbatim: *"The producer side (pushing a `MASTERY_UPDATE` op when the engine saves) belongs to the engine-wiring plan … that plan will call `pushToSyncQueue({ type: SYNC_OP_TYPES.MASTERY_UPDATE, payload: { masteryState, interactionLog } })`"*). This task is that producer. It is the natural owner because every game integrated in Tasks 4–11 flows through `recordAttempt`, so wiring the producer once here covers all 8 games (and the 12 v2 games later) with no per-game code.
+
+`engineAPI.js` is **NOT** frozen (the engine *core layers* are locked behind the public API, but `engineAPI.js` itself is the public surface this plan is allowed to extend — see the engine README "Import only from `engineAPI.js`"; we are editing that file, not its internals). The edit is additive: one import + one `pushToSyncQueue(...)` call right after the existing `saveMasteryState(s)`.
+
+**Payload contract (must match the backend consumer exactly):**
+- Op shape mirrors the existing `GAME_SESSION` push at `usePlayerStore.js:133` → `{ type: 'MASTERY_UPDATE', payload: { masteryState: <saved state> } }`.
+- The `payload.masteryState` **key** is consumed by the backend plan's `/api/sync` handler, which destructures `masteryState` from the POST body (`syncEngine.sendToAPI` POSTs `operation.payload` directly) and persists it into the Mongo `Progress.masteryState` (`Schema.Types.Mixed`) field. The **value** is the exact object the engine just saved — `{ belief, attempts, lastPracticed, review }` — i.e. the same `s` passed to `saveMasteryState(s)` and the same shape `loadMasteryState()` returns. This is byte-for-byte the round-trip the backend plan's "persists masteryState (MASTERY_UPDATE payload)" test asserts.
+- We use the **string literal** `'MASTERY_UPDATE'` (not `SYNC_OP_TYPES.MASTERY_UPDATE`) so this plan stays self-contained and does not hard-depend on the `SYNC_OP_TYPES` constant the backend plan adds to `syncEngine.js`. The literal equals that constant's value (`SYNC_OP_TYPES.MASTERY_UPDATE === 'MASTERY_UPDATE'`), so the two plans interoperate in either merge order.
+- `interactionLog` is intentionally **omitted** from the payload: the backend `/api/sync` merge is additive (it only writes keys present in the body), `interactionLog` defaults to `[]` server-side, and the engine does not keep an in-memory interaction array (it appends to IndexedDB one row at a time). Shipping `masteryState` alone is correct and matches the backend's "only the keys present in the body" semantics. (If a later plan wants the full DKT sequence on the server, it can extend this payload — flagged in Open Questions.)
+
+**Fire-and-forget:** `recordAttempt` already `await`s `saveMasteryState`. `pushToSyncQueue` is also async; we `await` it too (we are already in an async function and the two writes are independent IndexedDB `put`/`add`s). This keeps `recordAttempt`'s contract identical: it still resolves to the mastery number after both writes complete.
+
+**Files:**
+- Modify: `src/engine/engineAPI.js`
+- Create: `src/engine/engineAPI.sync.test.js`
+
+- [ ] **Step 1: Write the failing test**
+
+This is a new file (not the engine-core `engineAPI.test.js`, which is owned by the engine-core plan — we add a sibling file so we never touch the locked suite). It runs under the **default Node env** with `fake-indexeddb` (already wired in `src/test/setup.js`), so `pushToSyncQueue` writes to a real in-memory `sync_queue`. Create `src/engine/engineAPI.sync.test.js`:
+```js
+import { describe, it, expect, beforeEach } from 'vitest';
+import { resetEngine, recordAttempt } from './engineAPI';
+import { getAllSyncQueueItems, getDB } from '../lib/db';
+
+// Clear the sync_queue between tests so the count assertion is exact.
+async function clearSyncQueue() {
+  const db = await getDB();
+  await db.clear('sync_queue');
+}
+
+describe('engineAPI -> sync queue producer', () => {
+  beforeEach(async () => {
+    resetEngine();
+    await clearSyncQueue();
+  });
+
+  it('enqueues exactly one MASTERY_UPDATE op per recordAttempt', async () => {
+    await recordAttempt({ skillId: 'addition', correct: true });
+
+    const items = await getAllSyncQueueItems();
+    const mastery = items.filter((i) => i.type === 'MASTERY_UPDATE');
+    expect(mastery).toHaveLength(1);
+  });
+
+  it('ships the saved mastery state (belief/attempts/...) under payload.masteryState', async () => {
+    await recordAttempt({ skillId: 'addition', correct: true });
+
+    const [op] = (await getAllSyncQueueItems()).filter((i) => i.type === 'MASTERY_UPDATE');
+    expect(op.payload).toBeTruthy();
+    expect(op.payload.masteryState).toBeTruthy();
+    // Same shape the engine persists via saveMasteryState / loadMasteryState.
+    expect(op.payload.masteryState).toHaveProperty('belief');
+    expect(op.payload.masteryState).toHaveProperty('attempts');
+    expect(op.payload.masteryState.attempts.addition).toBe(1);
+  });
+
+  it('enqueues one MASTERY_UPDATE per attempt (two attempts -> two ops)', async () => {
+    await recordAttempt({ skillId: 'addition', correct: true });
+    await recordAttempt({ skillId: 'addition', correct: false });
+
+    const items = await getAllSyncQueueItems();
+    expect(items.filter((i) => i.type === 'MASTERY_UPDATE')).toHaveLength(2);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+```bash
+npm test -- engineAPI.sync
+```
+Expected: FAIL — `recordAttempt` does not enqueue anything yet, so `mastery` is empty (`expected length 1, got 0`).
+
+- [ ] **Step 3: Modify `recordAttempt` to enqueue the op**
+
+In `src/engine/engineAPI.js`, the current db import block is:
+```js
+import {
+  loadMasteryState,
+  saveMasteryState,
+  appendInteraction,
+} from '../lib/db';
+```
+Replace it with (add `pushToSyncQueue`):
+```js
+import {
+  loadMasteryState,
+  saveMasteryState,
+  appendInteraction,
+  pushToSyncQueue,
+} from '../lib/db';
+```
+
+The current `recordAttempt` tail is:
+```js
+  await appendInteraction({ skillId, correct, responseTime, timestamp: now });
+  await saveMasteryState(s);
+  return mastery;
+}
+```
+Replace it with (enqueue a MASTERY_UPDATE op carrying the just-saved state, right after `saveMasteryState`):
+```js
+  await appendInteraction({ skillId, correct, responseTime, timestamp: now });
+  await saveMasteryState(s);
+  // Tell the offline sync queue that mastery changed so it ships to /api/sync.
+  // Payload key `masteryState` and shape ({ belief, attempts, lastPracticed, review })
+  // match the backend MASTERY_UPDATE handler (sibling backend-mastery-sync plan).
+  await pushToSyncQueue({ type: 'MASTERY_UPDATE', payload: { masteryState: s } });
+  return mastery;
+}
+```
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+```bash
+npm test -- engineAPI.sync
+```
+Expected: PASS (all 3 assertions).
+
+- [ ] **Step 5: Confirm the engine-core suite still passes (engineAPI is shared)**
+
+This edit changes `recordAttempt`, which the **locked** engine-core suite exercises. Re-run the whole suite to prove no regression:
+```bash
+npm test
+```
+Expected: PASS — all engine-core tests (`engineAPI.test.js`, `decisionLayer.test.js`, `knowledgeGraph.test.js`, `masteryModel.test.js`), `db.mastery.test.js`, the new `gameSkills.test.js`, and `engineAPI.sync.test.js` green, 0 failures. (The engine-core `engineAPI.test.js` does **not** assert on the sync queue, and `recordAttempt` still returns the same mastery number, so adding an extra IndexedDB write does not change any existing assertion.)
+
+> **Test-isolation note:** the engine-core `engineAPI.test.js` runs in the same `fake-indexeddb` instance. Its assertions check mastery/difficulty/reviews, never the `sync_queue`, so the extra enqueue is invisible to it. The new `engineAPI.sync.test.js` clears `sync_queue` in `beforeEach`, so its counts stay exact regardless of test ordering.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/engine/engineAPI.js src/engine/engineAPI.sync.test.js
+git commit -m "feat(engine): enqueue MASTERY_UPDATE sync op on recordAttempt"
+```
+
+---
+
 ### Task 4: ArithmeticGame — difficulty from engine + per-answer recording
 
 `ArithmeticGame` (route `/games/arithmetic`, `useGamification`) currently lets the user pick difficulty via three buttons and seeds `useState('easy')`. We **keep the buttons** (visual design is untouched — spec §7 Critical) but change the *initial* difficulty to the engine's recommendation, and we record every answer in `handleSubmit`. Skill: `skillForGame('ArithmeticGame') === 'addition'` (primary of `['addition','subtraction']`; both are arithmetic, addition is the canonical generator skill).
@@ -466,10 +610,11 @@ Replace it with (record correctness + responseTime per answer; fire-and-forget, 
 
 - [ ] **Step 5: Verify build + lint**
 
+> **Lint baseline is RED in this repo** (verified: `npm run lint` currently exits non-zero with 65 pre-existing errors across `Profile.jsx`, `StudentDashboard.jsx`, `TeacherDashboard.jsx`, `useSyncStore.js`, etc.). Running the whole-repo `npm run lint` will therefore fail on code this task never touched. To verify *this task* introduced no new lint errors, lint **only the changed file** with `npx eslint`:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/ArithmeticGame.jsx
 ```
-Expected: build succeeds; no new lint errors in `src/pages/ArithmeticGame.jsx`. (Behavioral verification is the integration test in Task 12.)
+Expected: build succeeds; `npx eslint src/pages/ArithmeticGame.jsx` is clean (this file had 0 lint errors at baseline, so it must stay at 0). (Behavioral verification is the integration test in Task 12.)
 
 - [ ] **Step 6: Commit**
 
@@ -592,10 +737,11 @@ Replace it with (record a hit as correct, a non-matching guess as incorrect; ign
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/MultiplicationMeteor.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds; `npx eslint src/pages/MultiplicationMeteor.jsx` is clean (0 errors at baseline → must stay 0).
 
 - [ ] **Step 4: Commit**
 
@@ -670,10 +816,11 @@ Replace it with (record immediately when correctness is known):
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/FractionFrenzy.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds; `npx eslint src/pages/FractionFrenzy.jsx` is clean (0 errors at baseline → must stay 0).
 
 - [ ] **Step 4: Commit**
 
@@ -804,10 +951,11 @@ Replace it with (record correctness per selection):
 
 - [ ] **Step 5: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/PatternPuzzle.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds. **Pre-existing baseline note:** `PatternPuzzle.jsx` already had **exactly one** lint error at baseline — `1:20 'useEffect' is defined but never used` (the `useEffect` import is dead code that predates this plan). This task's import replacement **keeps** `useEffect` in the import list (it is part of the unchanged "before" line) and does **not** add a new `useEffect` usage, so this single pre-existing error persists and is acceptable. The acceptance bar is: `npx eslint src/pages/PatternPuzzle.jsx` reports **no more than** that one pre-existing `useEffect` error and **zero** new errors. (If you want a clean file, dropping `useEffect` from the import is a safe, content-neutral cleanup — but it is technically outside this plan's "additive only" scope, so leave it unless the team approves.)
 
 - [ ] **Step 6: Commit**
 
@@ -879,10 +1027,11 @@ Replace it with (record correctness per choice):
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/MultiplicationFarm.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds. **Pre-existing baseline note:** `MultiplicationFarm.jsx` already had **two** lint errors at baseline — `1:20 'useEffect' is defined but never used` and `2:10 'motion' is defined but never used` (both predate this plan; the "before" import lines are unchanged by this task). The acceptance bar is: `npx eslint src/pages/MultiplicationFarm.jsx` reports **no more than** those two pre-existing errors and **zero** new errors.
 
 - [ ] **Step 4: Commit**
 
@@ -947,10 +1096,11 @@ Replace it with (record the round's correctness; `correct` is already in scope):
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/FractionNinja.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds; `npx eslint src/pages/FractionNinja.jsx` is clean (0 errors at baseline → must stay 0).
 
 - [ ] **Step 4: Commit**
 
@@ -1030,10 +1180,11 @@ Note: the existing local `const correct` here holds the *expected decimal value*
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/DecimalMall.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds; `npx eslint src/pages/DecimalMall.jsx` is clean (0 errors at baseline → must stay 0).
 
 - [ ] **Step 4: Commit**
 
@@ -1116,10 +1267,11 @@ Replace it with (record correctness; skip empty/invalid input so a blank Enter i
 
 - [ ] **Step 3: Verify build + lint**
 
+> Whole-repo `npm run lint` is RED at baseline (see Task 4 Step 5). Lint only the changed file:
 ```bash
-npm run build && npm run lint
+npm run build && npx eslint src/pages/IntegerMountain.jsx
 ```
-Expected: build succeeds; no new lint errors.
+Expected: build succeeds; `npx eslint src/pages/IntegerMountain.jsx` is clean (0 errors at baseline → must stay 0).
 
 - [ ] **Step 4: Commit**
 
@@ -1323,12 +1475,20 @@ npm test
 ```
 Expected: PASS, 0 failures.
 
-- [ ] **Step 2: Lint**
+- [ ] **Step 2: Lint (scoped to changed files — whole-repo lint is RED at baseline)**
 
+> `npm run lint` over the whole repo exits non-zero on **65 pre-existing errors** that this plan never touches (`Profile.jsx`, `StudentDashboard.jsx`, `TeacherDashboard.jsx`, `useSyncStore.js`, plus pre-existing dead-import errors in `MultiplicationFarm.jsx` and `PatternPuzzle.jsx`). Do **not** gate this plan on a green whole-repo lint. Instead lint exactly the files this plan creates/modifies:
 ```bash
-npm run lint
+npx eslint src/App.jsx src/engine/gameSkills.js src/engine/engineAPI.js \
+  src/pages/ArithmeticGame.jsx src/pages/MultiplicationMeteor.jsx \
+  src/pages/FractionFrenzy.jsx src/pages/PatternPuzzle.jsx \
+  src/pages/MultiplicationFarm.jsx src/pages/FractionNinja.jsx \
+  src/pages/DecimalMall.jsx src/pages/IntegerMountain.jsx
 ```
-Expected: no new errors in `src/App.jsx`, `src/engine/gameSkills.js`, or any of the 8 modified `src/pages/*.jsx`.
+Expected: **zero new errors**. Two files carry pre-existing dead-import errors that are out of this plan's additive scope and must remain the only errors reported:
+- `MultiplicationFarm.jsx` — `useEffect` + `motion` unused (2 pre-existing errors).
+- `PatternPuzzle.jsx` — `useEffect` unused (1 pre-existing error).
+All other listed files (incl. `App.jsx`, `gameSkills.js`, `engineAPI.js`, and the other 6 games) must be **clean (0 errors)**.
 
 - [ ] **Step 3: Build**
 
@@ -1361,6 +1521,7 @@ git status   # expect clean; commit only if a verification step required a fix
 - §10 "integrate top 8 first; remaining 12 keep current behavior in v1" → exactly 8 games modified; 12 untouched. ✅
 - §7 **Critical** "zero changes to game content or visual design" → every task is additive (imports + one `recordAttempt` call + difficulty *default* only); no markup/JSX/styling/scoring/XP changed. Each task explicitly preserves the existing generators and XP calls. ✅
 - `initEngine()` once at startup → Task 3 (in `App.jsx`'s existing effect; rationale for App over main.jsx documented). ✅
+- §7 server-sync producer "client enqueues `MASTERY_UPDATE` when mastery changes" → Task 3b extends `engineAPI.recordAttempt` to `pushToSyncQueue({ type: 'MASTERY_UPDATE', payload: { masteryState: s } })` right after `saveMasteryState`. Payload key/shape matches the sibling backend-mastery-sync `/api/sync` handler. ✅
 
 **2. Placeholder scan:** No "TBD" / "similar to above" / "add error handling later". Every modify step shows the exact current code and the exact replacement, in full. Every create step has complete file contents. ✅
 
@@ -1372,6 +1533,9 @@ git status   # expect clean; commit only if a verification step required a fix
 - Import paths: games live in `src/pages/`, so `../engine/engineAPI` and `../engine/gameSkills` are correct relative paths (verified against existing `../store/...` and `../hooks/...` imports). ✅
 - Test env: `vitest.config.js` default stays `node` (engine tests unaffected); component tests opt into jsdom via `// @vitest-environment jsdom` and the `include` glob widened to `.test.{js,jsx}`. ✅
 - `npm install` uses `--legacy-peer-deps` (vite 8 vs vite-plugin-pwa peer conflict) — stated in Task 1. ✅
+- `MASTERY_UPDATE` op shape `{ type: 'MASTERY_UPDATE', payload: { masteryState: <{ belief, attempts, lastPracticed, review }> } }` matches: (a) the existing `GAME_SESSION` push pattern in `usePlayerStore.js:133`, (b) `syncEngine.sendToAPI` (POSTs `operation.payload`), and (c) the backend plan's `/api/sync` `masteryState` key + `Progress.masteryState` Mixed field. Verified against `src/lib/db.js` `pushToSyncQueue`, `src/lib/syncEngine.js`, and the sibling plan's Task 4/Task 6. ✅
+
+**5. Lint reality (verified by running `npm run lint`):** The whole-repo lint is **RED at baseline** (65 errors, 10 warnings) in files this plan never touches (`Profile.jsx`, `StudentDashboard.jsx`, `TeacherDashboard.jsx`, `useSyncStore.js`) plus two pre-existing dead-import errors inside touched games (`MultiplicationFarm.jsx`: `useEffect`+`motion`; `PatternPuzzle.jsx`: `useEffect`). Therefore every verification step uses **`npx eslint <changed file(s)>`**, never the whole-repo `npm run lint`, and the acceptance bar is "no NEW errors beyond the named pre-existing ones." ✅
 
 **4. Per-game correctness signal (verified against each file's actual handler):**
 | Game | Handler | Correctness expression recorded | Difficulty wired? |
@@ -1400,3 +1564,9 @@ git status   # expect clean; commit only if a verification step required a fix
 5. **PatternPuzzle difficulty mapping (`easy→1, medium→3, hard→5`):** Chosen to map cleanly onto the existing `maxIdx = min(5, 1 + floor(level/2))` ramp (1/3/5 → 1/2/3 pattern types). Confirm these starting points feel right, or tune the map without touching the generator.
 
 6. **Component-test selectors:** The integration tests target buttons by Tailwind class fragments / text patterns (no `data-testid` exists, and §7 forbids adding markup). If a future visual refresh changes those class names, the selectors break. Acceptable for v1; consider negotiating a few `data-testid`s with the design owner if these tests prove brittle.
+
+7. **`MASTERY_UPDATE` payload omits `interactionLog` (Task 3b):** The backend-mastery-sync plan's `/api/sync` accepts both `masteryState` and `interactionLog`, but the engine has no in-memory interaction array to ship (it appends each interaction straight to IndexedDB). We send `masteryState` only; the server's additive merge leaves `interactionLog` at its `[]` default. If the DKT-pipeline or teacher-dashboard plan needs the full server-side interaction sequence, decide whether the producer should also read recent rows via `getInteractionLog()` and attach them — flag the chosen owner so the sequence isn't shipped twice.
+
+8. **One `MASTERY_UPDATE` op per answer = sync-queue volume (Task 3b):** `recordAttempt` now enqueues one op **per in-game answer**, so a 60-second timed game can produce dozens of queued snapshots; each is a full mastery state. `syncEngine` ships them oldest-first and the server merge is idempotent (last-write-wins on `masteryState`), so correctness holds, but the queue can grow offline. Consider (a) coalescing to the latest snapshot before flushing, or (b) keeping it simple for v1 since each op is small and the queue drains on reconnect. Confirm preference; no code change made here.
+
+9. **Error surface of fire-and-forget `recordAttempt` (Task 3b):** Games call `recordAttempt(...)` without `await`/`.catch`. `recordAttempt` now performs three IndexedDB writes (`appendInteraction`, `saveMasteryState`, `pushToSyncQueue`); a rejection in any becomes an unhandled promise rejection in the game. This matches the brief's "fire-and-forget — never await in a UI handler" directive and the pre-existing pattern, but if unhandled rejections become noisy, wrap the call site as `recordAttempt(...).catch(() => {})` (a one-token, content-neutral change) — deferred, flagged for the team.

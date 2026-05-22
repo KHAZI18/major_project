@@ -9,7 +9,7 @@
 ```
   ── OFF-DEVICE (Python) ──────────────────         ── ON-DEVICE (JS) ─────────────────────────
   scripts/train_dkt.py                                src/engine/masteryModelDKT.js
-   1. load synthetic trajectories (.npz)               • loads public/models/dkt/model.json once
+   1. load synthetic trajectories (.parquet)           • loads public/models/dkt/model.json once
    2. build 1-layer LSTM (100u, dropout 0.2)           • keeps the interaction sequence in the
    3. train: BCE on next-step correctness                belief object (sequence-based, not scalar)
    4. validate: AUC ≥ 0.85 on held-out                  • re-runs LSTM inference -> per-skill P(correct)
@@ -41,10 +41,10 @@ The Python half mirrors `src/engine/masteryModel.js` math semantics: belief = pe
 
 Spec §5.1 hard-codes the DKT input encoding as `2 × 12 = 24` and the output as "12 skills", because the §5.1 prose assumed **12** skills. The shipped knowledge graph (`src/engine/knowledgeGraph.js`, `SKILL_IDS`) has **13** skills (the §4 table lists 13; the "12 nodes" heading is the documented discrepancy already flagged in the engine-core plan). Therefore, for this codebase:
 
-- **Input one-hot dimension = `2 × num_skills = 2 × 13 = 26`** (one-hot over the `(skill, correct)` pair: index `skill_index` if incorrect, `num_skills + skill_index` if correct).
+- **Input one-hot dimension = `2 × num_skills = 2 × 13 = 26`** (one-hot over the `(skill, correct)` pair). **The one-hot index convention is LOCKED by the data-producer plan as `dkt_input_idx = skill_idx * 2 + correct`** — i.e. `(skill 0, wrong)=0`, `(skill 0, right)=1`, … `(skill 12, right)=25`. This convention is identical in the Python encoder, the JS encoder, and every test (see "Canonical data contract" below). An earlier draft of this plan used `skill_index + correct*NUM_SKILLS`; that has been **removed** — do not reintroduce it.
 - **Output dimension = `num_skills = 13`** (sigmoid, per-skill `P(correct | skill)` ≈ per-skill mastery).
 
-Every dimension in both halves is computed from `NUM_SKILLS` / `SKILL_IDS.length` — **never hard-coded to 12, 24, or 13**. The Python side reads `NUM_SKILLS` from a skills manifest exported alongside the training data so Python and JS agree on skill ordering. This is called out again in Open Questions.
+Every dimension in both halves is computed from `NUM_SKILLS` / `SKILL_IDS.length` — **never hard-coded to 12, 24, or 13**. The Python side reads `num_skills` / `skill_ids` from the data-producer's `*.meta.json` sidecar (see below) so Python and JS agree on skill ordering. This is called out again in Open Questions.
 
 ---
 
@@ -61,28 +61,47 @@ The directory will be `scripts/` (created in Task 2), matching `scripts/simulate
 
 ---
 
-## Dependencies on the synthetic-data plan (NOT YET WRITTEN)
+## Canonical data contract — owned by the synthetic-data plan (HARD DEPENDENCY)
 
-The synthetic trajectory dataset is owned by a **separate plan** (`docs/superpowers/plans/2026-05-22-synthetic-data-and-evaluation.md`) which **does not exist yet** as of this writing. This plan therefore **defines the data-interchange schema itself** and flags that the synthetic-data plan MUST produce exactly this format. The contract:
+> **DEPENDS ON:** `docs/superpowers/plans/2026-05-22-synthetic-data-and-evaluation.md` (the **data producer**). That plan is now the **single source of truth** for the training data. **It MUST be implemented first** — this plan's real-training step (Task 5 Step 5) and trained artifact (Task 9) are BLOCKED until its dataset exists. The schema below is **read FROM the producer, not defined here**; if the two ever disagree, the producer wins and this plan is updated to match.
 
-**File:** `data/synthetic/trajectories.npz` (NumPy `savez_compressed`), with arrays:
+The data producer emits a **long-format columnar trajectory file** (Parquet preferred, CSV fallback) — **NOT** a NumPy `.npz` — plus a `*.meta.json` sidecar. There is **no `skills.json`**; skill ordering comes from the meta sidecar's `skill_ids`.
 
-| Array | Shape | dtype | Meaning |
-|---|---|---|---|
-| `X` | `(N, SEQ_LEN, 2*NUM_SKILLS)` | `float32` | One-hot `(skill, correct)` per timestep. Zero-vector = padding. |
-| `Y_skill` | `(N, SEQ_LEN, NUM_SKILLS)` | `float32` | One-hot mask: which skill the **next** interaction targets (1 at that skill, else 0). |
-| `Y_correct` | `(N, SEQ_LEN)` | `float32` | The **next** interaction's correctness (0/1) — the BCE target. |
-| `mask` | `(N, SEQ_LEN)` | `float32` | 1 for real timesteps, 0 for padding (so loss/metrics ignore padding). |
+**File:** `data/synthetic/trajectories.parquet` (or `.csv`). One row per interaction, **sorted by `(student_id, step_idx)`** (long format — this plan groups by `student_id`, sorts by `step_idx`, and pads/truncates to `SEQ_LEN=50` at training time). Columns (from the producer's `scripts/eval/schema.py` `COLUMNS`/`DTYPES`):
 
-**Plus** a sidecar manifest `data/synthetic/skills.json`: `{ "skill_ids": [...13 ids in SKILL_IDS order...], "num_skills": 13, "seq_len": 50 }`. This is the single source of truth for skill ordering shared by Python and JS.
+| Column | Dtype | Meaning |
+|---|---|---|
+| `student_id` | `int32` | 0-based synthetic student index |
+| `step_idx` | `int16` | 0-based chronological interaction index within the student |
+| `skill_id` | `string` | one of the 13 skill ids (e.g. `addition`) |
+| `skill_idx` | `int8` | index of `skill_id` into canonical `SKILL_IDS` order (0..12) |
+| `correct` | `int8` | 1 correct / 0 incorrect |
+| `difficulty` | `int8` | 0 easy / 1 medium / 2 hard (served bin) |
+| `response_time_ms` | `int32` | simulated latency (lognormal) |
+| `latent_ability` | `float32` | ground-truth P(known) BEFORE the step — **diagnostics only; MUST NOT be a model feature** |
+| `dkt_input_idx` | `int16` | one-hot index `skill_idx * 2 + correct` into the 26-dim DKT input vector |
 
-- `N` = number of (student-)sequences (10,000 per spec §5.3; the toy fixture in Tasks 3–4 uses `N=8`).
-- `SEQ_LEN` = 50 (spec §5.1).
-- One-hot index convention (MUST match `src/engine/masteryModelDKT.js`): for interaction on skill `s` (0-based index in `skill_ids`) with correctness `c∈{0,1}`, the hot index in the length-`2*NUM_SKILLS` vector is `s + c*NUM_SKILLS`. (i.e. first `NUM_SKILLS` slots = "answered incorrectly", next `NUM_SKILLS` = "answered correctly".)
+**Sidecar `data/synthetic/trajectories.meta.json`** records: `schema_version`, `num_skills` (13), `skill_ids` (ordered, the single source of skill ordering), `num_students`, `seed`, `max_interactions`, `git_sha_of_knowledge_graph_js`. **This plan derives `NUM_SKILLS`/`skill_ids` from this sidecar** and asserts `num_skills == 13`.
 
-> If the synthetic-data plan emits a different schema (e.g. ragged sequences, different one-hot convention, or a `.csv`), reconcile **there** to match this contract, OR update both `train_dkt.py` and `masteryModelDKT.js` together — the one-hot index convention is load-bearing and must be identical in all three places (Python encoder, JS encoder, and this doc).
+**One-hot index convention (LOCKED, load-bearing in all three places — Python encoder, JS encoder, tests):**
 
-Tasks 3–6 use a **self-contained toy `.npz` fixture** generated by the test itself, so this plan is executable and fully testable **before** the synthetic-data plan lands.
+```
+dkt_input_idx = skill_idx * 2 + correct
+```
+
+so `(skill 0, wrong)=0`, `(skill 0, right)=1`, `(skill 3, wrong)=6`, `(skill 3, right)=7`, … `(skill 12, right)=25`. (Equivalently: even indices = answered-incorrectly, odd indices = answered-correctly, interleaved per skill.) This is the standard DKT encoding and matches the producer's `schema.dkt_input_index(skill_idx, correct)` exactly. **The earlier `skill_index + correct*NUM_SKILLS` convention is removed everywhere in this plan.**
+
+**DKT consumption recipe (from the producer's `docs/data/TRAJECTORY_SCHEMA.md`):**
+1. Load the file, group by `student_id`, sort by `step_idx`.
+2. Input at step t = one-hot(`dkt_input_idx[t]`) in R^26 (`2 * num_skills`).
+3. Target at step t = `correct[t+1]` for the skill at t+1 (next-step correctness); the targeted skill = `skill_idx[t+1]`.
+4. Pad/truncate each student to `SEQ_LEN = 50`; mask padded steps in the loss.
+5. NEVER feed `latent_ability` to the model.
+
+- `N` = number of student sequences (10,000 per spec §5.3; the toy fixture in Tasks 3–4 uses `N=8`, generated in-test in the SAME long-row shape via `make_toy_frame()`).
+- `SEQ_LEN` = 50 (spec §5.1, = producer's `MAX_SEQ_LEN`).
+
+Tasks 3–6 build a **self-contained toy long-format fixture** (a small list of interaction rows) inside the test, so this plan is executable and fully testable **before** the producer's full dataset is generated — but the real-training step still requires the producer to be implemented.
 
 ---
 
@@ -95,7 +114,7 @@ Tasks 3–6 use a **self-contained toy `.npz` fixture** generated by the test it
 | `scripts/test_train_dkt.py` | pytest: shapes, one-step train, AUC on toy set, encoder round-trip (new) |
 | `scripts/pytest.ini` | pytest config scoped to `scripts/` (new) |
 | `scripts/README.md` | How to set up the env, train, and export (new) |
-| `data/synthetic/.gitkeep` | Placeholder; real `.npz` produced by the synthetic-data plan (new) |
+| `data/synthetic/.gitkeep` | Placeholder; real `trajectories.parquet` + `.meta.json` produced by the synthetic-data plan (new) |
 | `public/models/dkt/model.json` + `group1-shard1of1.bin` | Exported tfjs model (generated artifact; committed, ~1-3 MB) |
 | `src/engine/masteryModelDKT.js` | JS DKT backend: same 3 exports as BKT, sequence-state handling (new) |
 | `src/engine/masteryModelDKT.test.js` | Vitest: contract parity with BKT, encoder, [0,1] bounds, mocked model (new) |
@@ -136,10 +155,12 @@ tensorflow-macos==2.15.0 ; platform_system == "Darwin" and platform_machine == "
 tensorflowjs==4.17.0
 numpy==1.26.4
 scikit-learn==1.4.2
+pandas==2.2.2
+pyarrow==16.1.0
 pytest==8.1.1
 ```
 
-> Rationale: `tensorflowjs==4.17.0` pins a converter compatible with `tensorflow==2.15`. NumPy is held `<2` because TF 2.15 predates NumPy 2 ABI. The environment marker swaps to `tensorflow-macos` on this machine.
+> Rationale: `tensorflowjs==4.17.0` pins a converter compatible with `tensorflow==2.15`. NumPy is held `<2` because TF 2.15 predates NumPy 2 ABI. The environment marker swaps to `tensorflow-macos` on this machine. **`pandas` + `pyarrow` are required to read the data-producer's Parquet trajectory file** (`load_dataset` in Task 4); they match the versions pinned in the data-producer plan's `requirements.txt`.
 
 - [ ] **Step 2: Install into the venv**
 
@@ -196,11 +217,14 @@ addopts = -q
 
 Append to the repo root `.gitignore` (create the lines if absent):
 ```gitignore
-# DKT: large synthetic datasets are generated, not committed
-data/synthetic/*.npz
-data/synthetic/skills.json
+# DKT: large synthetic datasets are generated by the synthetic-data plan, not committed
+data/synthetic/*.parquet
+data/synthetic/*.csv
+data/synthetic/*.meta.json
 # (public/models/dkt/* IS committed — it is the shipped runtime asset)
 ```
+
+> Note: the data-producer plan already adds `data/synthetic/` and `*.parquet` to `.gitignore`. These lines are idempotent — skip any that already exist (don't duplicate).
 
 - [ ] **Step 4: Commit**
 
@@ -260,15 +284,25 @@ def test_model_has_one_lstm_layer_with_100_units():
 
 
 def test_encode_interaction_one_hot_convention():
-    # skill index 3, correct -> hot at 3 + NUM_SKILLS
+    # LOCKED convention (data-producer): dkt_input_idx = skill_idx*2 + correct.
+    # skill index 3, correct -> hot at 3*2 + 1 = 7
     v_correct = encode_interaction(3, True)
     assert v_correct.shape == (INPUT_DIM,)
-    assert v_correct[3 + NUM_SKILLS] == 1.0
+    assert v_correct[3 * 2 + 1] == 1.0
     assert v_correct.sum() == 1.0
-    # skill index 3, incorrect -> hot at 3
+    # skill index 3, incorrect -> hot at 3*2 + 0 = 6
     v_wrong = encode_interaction(3, False)
-    assert v_wrong[3] == 1.0
+    assert v_wrong[3 * 2 + 0] == 1.0
     assert v_wrong.sum() == 1.0
+
+
+def test_encode_matches_producer_dkt_input_idx():
+    # Exhaustive parity with the data-producer's schema.dkt_input_index.
+    for s in range(NUM_SKILLS):
+        for c in (0, 1):
+            v = encode_interaction(s, bool(c))
+            assert int(v.argmax()) == s * 2 + c
+            assert v.sum() == 1.0
 
 
 def test_model_predicts_in_unit_interval():
@@ -298,16 +332,23 @@ Builds, trains, evaluates and exports a 1-layer LSTM Deep Knowledge Tracing
 model per spec §5.1, adapted to the SHIPPED 13-skill knowledge graph
 (input dim = 2*13 = 26, output dim = 13 — NOT the spec's hard-coded 24/12).
 
+Training data is the data-producer plan's LONG-format trajectory file
+(data/synthetic/trajectories.parquet + .meta.json) — see
+docs/superpowers/plans/2026-05-22-synthetic-data-and-evaluation.md. This script
+reads it with load_dataset() and windows it to (N, 50, 26) tensors. There is NO
+self-defined .npz schema.
+
 Run locally (CPU is fine — the model is tiny):
     venv/bin/pip install -r requirements-dkt.txt
     venv/bin/python scripts/train_dkt.py \
-        --data data/synthetic/trajectories.npz \
+        --data data/synthetic/trajectories.parquet \
         --out  public/models/dkt
 
 Run on Colab (no local TF wheel needed):
-    !pip install tensorflow tensorflowjs scikit-learn
-    from train_dkt import build_dkt_model, train, evaluate_auc, export_tfjs
-    # ... load your .npz, then call train(...) / export_tfjs(...)
+    !pip install tensorflow tensorflowjs scikit-learn pandas pyarrow
+    from train_dkt import build_dkt_model, train, evaluate_auc, export_tfjs, load_dataset
+    ds = load_dataset("trajectories.parquet")  # producer's long-format file + .meta.json
+    # ... split by student, train(...), check AUC >= 0.85, export_tfjs(...)
 """
 from __future__ import annotations
 
@@ -318,9 +359,10 @@ import os
 import numpy as np
 
 # ── Dimensions: derive everything from the skill count. ──────────────────────
-# Mirrors src/engine/knowledgeGraph.js SKILL_IDS (13 skills). The training data
-# manifest (data/synthetic/skills.json) is the runtime source of truth; this
-# constant is the default/fallback for tests that don't load a manifest.
+# Mirrors src/engine/knowledgeGraph.js SKILL_IDS (13 skills). At runtime,
+# load_dataset() reads num_skills from the data-producer's trajectories.meta.json
+# sidecar and asserts it == NUM_SKILLS; this constant is the default/fallback for
+# tests and model-builder calls that don't load a dataset.
 NUM_SKILLS = 13
 SEQ_LEN = 50
 INPUT_DIM = 2 * NUM_SKILLS  # 26
@@ -332,12 +374,14 @@ LEARNING_RATE = 1e-3
 def encode_interaction(skill_index: int, correct: bool) -> np.ndarray:
     """One-hot the (skill, correct) pair into a length-INPUT_DIM vector.
 
-    Index convention (MUST match masteryModelDKT.js):
-      hot_index = skill_index + (NUM_SKILLS if correct else 0)
-    i.e. first NUM_SKILLS slots = answered-incorrectly, next NUM_SKILLS = correct.
+    LOCKED convention (data-producer plan, schema.dkt_input_index — MUST match
+    masteryModelDKT.js encodeInteraction):
+      hot_index = skill_index * 2 + correct
+    i.e. even index = answered-incorrectly, odd index = answered-correctly,
+    interleaved per skill: (skill 0, wrong)=0, (skill 0, right)=1, ... (skill 12, right)=25.
     """
     v = np.zeros(INPUT_DIM, dtype="float32")
-    v[skill_index + (NUM_SKILLS if correct else 0)] = 1.0
+    v[skill_index * 2 + (1 if correct else 0)] = 1.0
     return v
 
 
@@ -378,7 +422,7 @@ Run:
 ```bash
 venv/bin/python -m pytest scripts/test_train_dkt.py -q
 ```
-Expected: PASS (5 passed). (First TF import is slow; allow ~30 s.)
+Expected: PASS (6 passed). (First TF import is slow; allow ~30 s.)
 
 - [ ] **Step 5: Commit**
 
@@ -401,12 +445,46 @@ The DKT loss/metric must only score the **next-interaction** prediction for the 
 
 Append to `scripts/test_train_dkt.py`:
 ```python
+import pandas as pd
 from train_dkt import (
     gather_target_predictions,
     train,
     evaluate_auc,
+    make_toy_frame,
+    frame_to_windows,
     make_toy_dataset,
 )
+
+
+def test_frame_to_windows_builds_next_step_tensors():
+    # Long-format rows for ONE student, 3 interactions, in the producer's schema.
+    # Encoding/targets follow the DKT consumption recipe: input one-hots
+    # dkt_input_idx[t]; the prediction slot for input t carries the NEXT step's
+    # (skill_idx[t+1], correct[t+1]); the final input row has no next -> masked.
+    # Sequences are LEFT-padded (newest at the last slot), so 3 real interactions
+    # occupy slots start..start+2 with start = SEQ_LEN - 3.
+    rows = pd.DataFrame([
+        dict(student_id=0, step_idx=0, skill_idx=0, correct=1, dkt_input_idx=0 * 2 + 1),
+        dict(student_id=0, step_idx=1, skill_idx=2, correct=0, dkt_input_idx=2 * 2 + 0),
+        dict(student_id=0, step_idx=2, skill_idx=1, correct=1, dkt_input_idx=1 * 2 + 1),
+    ])
+    ds = frame_to_windows(rows, seq_len=SEQ_LEN, num_skills=NUM_SKILLS)
+    assert ds["X"].shape == (1, SEQ_LEN, INPUT_DIM)
+    assert ds["Y_skill"].shape == (1, SEQ_LEN, NUM_SKILLS)
+    assert ds["Y_correct"].shape == (1, SEQ_LEN)
+    assert ds["mask"].shape == (1, SEQ_LEN)
+    start = SEQ_LEN - 3
+    # Input at the first real slot one-hots row0's dkt_input_idx (skill 0, correct -> 1).
+    assert ds["X"][0, start, 0 * 2 + 1] == 1.0
+    # Prediction slot for input row0 targets the NEXT step row1 (skill 2, incorrect).
+    assert ds["Y_skill"][0, start, 2] == 1.0
+    assert ds["Y_correct"][0, start] == 0.0
+    # First two real slots have next-step targets; the final real slot has no next.
+    assert ds["mask"][0, start] == 1.0 and ds["mask"][0, start + 1] == 1.0
+    assert ds["mask"][0, start + 2] == 0.0
+    # Everything before the first real slot is padding (no input, no target).
+    assert ds["X"][0, : start].sum() == 0.0
+    assert ds["mask"][0, : start].sum() == 0.0
 
 
 def test_gather_selects_targeted_skill_prediction():
@@ -423,7 +501,7 @@ def test_gather_selects_targeted_skill_prediction():
 
 
 def test_train_runs_one_epoch_and_reduces_loss():
-    ds = make_toy_dataset(n=8, seed=0)  # deterministic toy .npz-shaped dict
+    ds = make_toy_dataset(n=8, seed=0)  # toy long-format frame -> windowed tensors
     model = build_dkt_model()
     history = train(model, ds, epochs=2, batch_size=4, verbose=0)
     losses = history.history["loss"]
@@ -517,39 +595,109 @@ def evaluate_auc(model, ds) -> float:
     return float(roc_auc_score(y_flat, p_flat))
 
 
-def make_toy_dataset(n=8, seed=0, seq_len=SEQ_LEN, num_skills=NUM_SKILLS):
-    """Deterministic, learnable toy dataset matching the .npz schema.
+def frame_to_windows(df, seq_len: int = SEQ_LEN, num_skills: int = NUM_SKILLS) -> dict:
+    """Convert the data-producer's LONG-format trajectory frame into the padded,
+    windowed tensors the LSTM trains on.
 
-    Each student has a fixed per-skill ability; correctness is sampled from it,
-    so a model CAN learn signal (loss decreases). Used only by tests.
+    Implements the DKT consumption recipe (docs/data/TRAJECTORY_SCHEMA.md):
+      group by student_id, sort by step_idx; input[t] = one-hot(dkt_input_idx[t]);
+      next-step target[t] targets skill_idx[t+1] with label correct[t+1]; pad/
+      truncate to seq_len; mask = 1 only where a real NEXT step exists.
+
+    df columns used: student_id, step_idx, skill_idx, correct, dkt_input_idx.
+    `latent_ability` is intentionally NOT read (never a model feature).
     """
-    rng = np.random.default_rng(seed)
     input_dim = 2 * num_skills
+    df = df.sort_values(["student_id", "step_idx"])
+    students = list(df.groupby("student_id", sort=False))
+    n = len(students)
+
     X = np.zeros((n, seq_len, input_dim), dtype="float32")
     Y_skill = np.zeros((n, seq_len, num_skills), dtype="float32")
     Y_correct = np.zeros((n, seq_len), dtype="float32")
     mask = np.zeros((n, seq_len), dtype="float32")
 
-    for i in range(n):
-        ability = rng.uniform(0.2, 0.9, size=num_skills)
-        length = rng.integers(seq_len // 2, seq_len + 1)
-        prev_skill, prev_correct = None, None
-        for t in range(length):
-            skill = int(rng.integers(0, num_skills))
-            correct = int(rng.random() < ability[skill])
-            if prev_skill is not None:
-                X[i, t] = encode_interaction(prev_skill, bool(prev_correct))
-            Y_skill[i, t, skill] = 1.0
-            Y_correct[i, t] = correct
-            mask[i, t] = 1.0
-            prev_skill, prev_correct = skill, correct
+    for i, (_, g) in enumerate(students):
+        idx = g["dkt_input_idx"].to_numpy()
+        skl = g["skill_idx"].to_numpy()
+        cor = g["correct"].to_numpy()
+        # Keep the LAST seq_len interactions if a student is longer than the window.
+        if len(idx) > seq_len:
+            idx, skl, cor = idx[-seq_len:], skl[-seq_len:], cor[-seq_len:]
+        L = len(idx)
+        # Left-pad so the newest interaction sits at the last real slot (matches the
+        # JS backend's right-aligned padding). start = seq_len - L.
+        start = seq_len - L
+        for t in range(L):
+            X[i, start + t, int(idx[t])] = 1.0  # one-hot(dkt_input_idx) — LOCKED convention
+            # next-step target lives at the PREVIOUS timestep
+            if t > 0:
+                Y_skill[i, start + t - 1, int(skl[t])] = 1.0
+                Y_correct[i, start + t - 1] = float(cor[t])
+                mask[i, start + t - 1] = 1.0
     return {"X": X, "Y_skill": Y_skill, "Y_correct": Y_correct, "mask": mask}
 
 
+def make_toy_frame(n=8, seed=0, seq_len=SEQ_LEN, num_skills=NUM_SKILLS):
+    """Deterministic, learnable LONG-format toy frame in the data-producer schema.
+
+    Each student has a fixed per-skill ability; correctness is sampled from it, so
+    a model CAN learn signal (loss decreases). Mirrors the producer's columns
+    (incl. dkt_input_idx = skill_idx*2 + correct). Used only by tests, so this
+    plan is runnable before the producer's real dataset is generated.
+    """
+    import pandas as pd
+
+    rng = np.random.default_rng(seed)
+    rows = []
+    for sid in range(n):
+        ability = rng.uniform(0.2, 0.9, size=num_skills)
+        length = int(rng.integers(seq_len // 2, seq_len + 1))
+        for step in range(length):
+            skill = int(rng.integers(0, num_skills))
+            correct = int(rng.random() < ability[skill])
+            rows.append(dict(
+                student_id=sid, step_idx=step, skill_idx=skill, correct=correct,
+                dkt_input_idx=skill * 2 + correct,
+            ))
+    return pd.DataFrame(rows)
+
+
+def make_toy_dataset(n=8, seed=0, seq_len=SEQ_LEN, num_skills=NUM_SKILLS):
+    """Toy windowed tensors = make_toy_frame -> frame_to_windows (the real path)."""
+    return frame_to_windows(make_toy_frame(n, seed, seq_len, num_skills),
+                            seq_len=seq_len, num_skills=num_skills)
+
+
 def load_dataset(path: str) -> dict:
-    """Load a synthetic-trajectory .npz produced by the synthetic-data plan."""
-    d = np.load(path)
-    return {k: d[k] for k in ("X", "Y_skill", "Y_correct", "mask")}
+    """Load the data-producer's LONG-format trajectory file and window it.
+
+    Reads Parquet (default) or CSV; validates the locked one-hot invariant
+    (dkt_input_idx == skill_idx*2 + correct) and num_skills from the *.meta.json
+    sidecar, then returns the windowed tensors via frame_to_windows.
+    """
+    import json
+    import pandas as pd
+
+    df = pd.read_csv(path) if str(path).endswith(".csv") else pd.read_parquet(path)
+
+    # Derive num_skills/skill ordering from the producer's meta sidecar.
+    meta_path = os.path.splitext(path)[0] + ".meta.json"
+    num_skills = NUM_SKILLS
+    if os.path.exists(meta_path):
+        meta = json.loads(open(meta_path).read())
+        num_skills = int(meta.get("num_skills", NUM_SKILLS))
+        if num_skills != NUM_SKILLS:
+            raise ValueError(
+                f"dataset num_skills={num_skills} != model NUM_SKILLS={NUM_SKILLS}; "
+                "regenerate the model dims from the knowledge graph."
+            )
+    # Validate the LOCKED one-hot convention before training on it.
+    expected = df["skill_idx"].astype(int) * 2 + df["correct"].astype(int)
+    if not (df["dkt_input_idx"].astype(int) == expected).all():
+        raise ValueError("dkt_input_idx must equal skill_idx*2 + correct (data contract violated)")
+
+    return frame_to_windows(df, seq_len=SEQ_LEN, num_skills=num_skills)
 ```
 
 - [ ] **Step 4: Run to verify it passes**
@@ -558,7 +706,7 @@ Run:
 ```bash
 venv/bin/python -m pytest scripts/test_train_dkt.py -q
 ```
-Expected: PASS (8 passed).
+Expected: PASS (10 passed).
 
 - [ ] **Step 5: Commit**
 
@@ -640,7 +788,8 @@ def _dir_size_mb(path: str) -> float:
 
 def main():
     ap = argparse.ArgumentParser(description="Train + export the DKT model.")
-    ap.add_argument("--data", default="data/synthetic/trajectories.npz")
+    ap.add_argument("--data", default="data/synthetic/trajectories.parquet",
+                    help="data-producer long-format trajectory file (.parquet or .csv)")
     ap.add_argument("--out", default="public/models/dkt")
     ap.add_argument("--epochs", type=int, default=30)
     ap.add_argument("--batch-size", type=int, default=64)
@@ -686,15 +835,15 @@ Run:
 ```bash
 venv/bin/python -m pytest scripts/test_train_dkt.py -q
 ```
-Expected: PASS (9 passed).
+Expected: PASS (11 passed).
 
-- [ ] **Step 5: Train + export on real data (when the synthetic `.npz` exists)**
+- [ ] **Step 5: Train + export on real data (when the producer's `trajectories.parquet` exists)**
 
-> BLOCKED-ON-DEPENDENCY: requires `data/synthetic/trajectories.npz` from the synthetic-data plan. Until then this step is a no-op; the toy tests above prove the pipeline. When the data lands, run:
+> BLOCKED-ON-DEPENDENCY: requires `data/synthetic/trajectories.parquet` (+ `trajectories.meta.json`) from the **data-producer plan** (`2026-05-22-synthetic-data-and-evaluation.md`), which MUST be implemented first. Until then this step is a no-op; the toy tests above prove the pipeline, and Task 9's placeholder model keeps the JS load/infer path runnable. When the data lands, run:
 
 ```bash
 venv/bin/python scripts/train_dkt.py \
-  --data data/synthetic/trajectories.npz \
+  --data data/synthetic/trajectories.parquet \
   --out  public/models/dkt \
   --epochs 30 --batch-size 64 --val-split 0.2 --auc-gate 0.85
 ```
@@ -795,7 +944,8 @@ function makeFakeModel() {
     predict(inputTensor) {
       // inputTensor is a tf.Tensor of shape [1, SEQ_LEN, INPUT_DIM].
       const data = inputTensor.dataSync(); // Float32Array length SEQ_LEN*INPUT_DIM
-      // Count correct interactions = hot indices in the upper half [NUM_SKILLS, 2N).
+      // LOCKED one-hot convention: hot index = skill_idx*2 + correct, so a CORRECT
+      // interaction is an ODD hot index; an incorrect one is EVEN.
       let correctCount = 0;
       let lastReal = -1;
       for (let t = 0; t < SEQ_LEN; t++) {
@@ -804,7 +954,7 @@ function makeFakeModel() {
         for (let k = 0; k < INPUT_DIM; k++) {
           if (data[base + k] === 1) {
             isReal = true;
-            if (k >= NUM_SKILLS) correctCount += 1;
+            if (k % 2 === 1) correctCount += 1; // odd index == answered-correctly
           }
         }
         if (isReal) lastReal = t;
@@ -838,14 +988,21 @@ describe('masteryModelDKT — dims', () => {
     expect(SEQ_LEN).toBe(50);
   });
 
-  it('encodes (skill, correct) with the documented one-hot convention', () => {
+  it('encodes (skill, correct) with the LOCKED one-hot convention idx*2 + correct', () => {
     const idx = SKILL_IDS.indexOf('addition');
     const v = encodeInteraction('addition', true);
     expect(v).toHaveLength(INPUT_DIM);
-    expect(v[idx + NUM_SKILLS]).toBe(1);
+    expect(v[idx * 2 + 1]).toBe(1);            // correct -> odd slot
     expect(v.reduce((a, b) => a + b, 0)).toBe(1);
     const w = encodeInteraction('addition', false);
-    expect(w[idx]).toBe(1);
+    expect(w[idx * 2 + 0]).toBe(1);            // incorrect -> even slot
+  });
+
+  it('encodeInteraction matches the data-producer dkt_input_idx for every skill', () => {
+    SKILL_IDS.forEach((sid, idx) => {
+      expect(encodeInteraction(sid, false).indexOf(1)).toBe(idx * 2 + 0);
+      expect(encodeInteraction(sid, true).indexOf(1)).toBe(idx * 2 + 1);
+    });
   });
 });
 
@@ -946,11 +1103,15 @@ export async function loadModel(url = DEFAULT_MODEL_URL) {
 
 const skillIndex = (skillId) => SKILL_IDS.indexOf(skillId);
 
-/** One-hot the (skill, correct) pair: hot at idx + (correct ? NUM_SKILLS : 0). */
+/**
+ * One-hot the (skill, correct) pair. LOCKED convention (data-producer plan,
+ * schema.dkt_input_index): hot index = skillIndex*2 + (correct ? 1 : 0).
+ * Even slot = answered-incorrectly, odd slot = answered-correctly.
+ */
 export function encodeInteraction(skillId, correct) {
   const v = new Float32Array(INPUT_DIM);
   const idx = skillIndex(skillId);
-  if (idx >= 0) v[idx + (correct ? NUM_SKILLS : 0)] = 1;
+  if (idx >= 0) v[idx * 2 + (correct ? 1 : 0)] = 1;
   return v;
 }
 
@@ -1370,27 +1531,31 @@ venv, or train on Colab (below). The model is a tiny LSTM — CPU training is fi
 ## Train + export (needs the synthetic dataset)
 ```bash
 venv/bin/python train_dkt.py \
-  --data ../data/synthetic/trajectories.npz \
+  --data ../data/synthetic/trajectories.parquet \
   --out  ../public/models/dkt \
   --epochs 30 --batch-size 64 --val-split 0.2 --auc-gate 0.85
 # add --quantize-int8 if the export exceeds ~3 MB (spec §10)
 ```
-`trajectories.npz` is produced by the synthetic-data plan; schema in
-`docs/superpowers/plans/2026-05-22-dkt-pipeline.md` ("Dependencies").
+`trajectories.parquet` (+ `trajectories.meta.json`) is produced by the
+**data-producer plan** (`docs/superpowers/plans/2026-05-22-synthetic-data-and-evaluation.md`);
+the locked schema is in that plan's `docs/data/TRAJECTORY_SCHEMA.md`. It MUST be
+implemented first.
 
 ## Colab (no local TF needed)
 ```python
-!pip install tensorflow tensorflowjs scikit-learn
-# upload train_dkt.py + trajectories.npz, then:
+!pip install tensorflow tensorflowjs scikit-learn pandas pyarrow
+# upload train_dkt.py + trajectories.parquet + trajectories.meta.json, then:
 from train_dkt import build_dkt_model, train, evaluate_auc, export_tfjs, load_dataset
-ds = load_dataset("trajectories.npz")
-# split, train, check AUC >= 0.85, export_tfjs(model, "dkt"), download the folder
+ds = load_dataset("trajectories.parquet")   # reads the .meta.json sidecar too
+# split by student, train, check AUC >= 0.85, export_tfjs(model, "dkt"), download the folder
 ```
 
 ## Dimensions (IMPORTANT)
 13 skills -> input one-hot dim = 26, output dim = 13. NOT the spec's 24/12.
-Skill ordering = `src/engine/knowledgeGraph.js` SKILL_IDS, mirrored in
-`data/synthetic/skills.json`.
+Skill ordering = `src/engine/knowledgeGraph.js` SKILL_IDS, surfaced to Python via
+the data-producer's `trajectories.meta.json` `skill_ids`. One-hot index convention
+is LOCKED: `dkt_input_idx = skill_idx * 2 + correct` (Python encoder, JS encoder,
+and the dataset all agree).
 ```
 
 - [ ] **Step 2: Full verification sweep**
@@ -1433,7 +1598,7 @@ git commit -m "docs(dkt): add training README and finalize pipeline"
 
 **2. Contract parity:** `masteryModelDKT.js` exports `createInitialBelief`, `updateBelief`, `getMastery` with the same signatures as `masteryModel.js`; the immutability and [0,1] guarantees are tested (Task 7). The shim (Task 8) presents one interface; `engineAPI` changes only its import line + one `await` in `initEngine`. ✅
 
-**3. Dimension consistency:** `NUM_SKILLS`/`INPUT_DIM`/`SEQ_LEN` derive from `SKILL_IDS.length` in JS and from `NUM_SKILLS=13` (+ data manifest) in Python; the one-hot index convention (`idx + correct*NUM_SKILLS`) is identical in `encode_interaction` (Py) and `encodeInteraction` (JS) and asserted in both test suites. ✅
+**3. Dimension consistency:** `NUM_SKILLS`/`INPUT_DIM`/`SEQ_LEN` derive from `SKILL_IDS.length` in JS and from the data-producer's `*.meta.json` `num_skills` (asserted == 13) in Python; the one-hot index convention (`skill_idx*2 + correct`, the data-producer's locked `dkt_input_idx`) is identical in `encode_interaction`/`frame_to_windows` (Py) and `encodeInteraction` (JS), exhaustively asserted against the producer convention in both test suites. ✅
 
 **4. Placeholder scan:** No "TBD"/"similar to above". Every code step has complete code. Two explicitly-blocked steps (Task 5 Step 5, Task 9 Step 1 trained artifact) depend on the synthetic dataset and are clearly marked BLOCKED-ON-DEPENDENCY with a placeholder-model workaround so the rest of the plan is executable now. ✅
 
@@ -1453,7 +1618,7 @@ git commit -m "docs(dkt): add training README and finalize pipeline"
 
 4. **BKT→DKT cutover risk (§10).** DKT ships as **opt-in** (flag defaults to BKT) precisely to de-risk: if DKT under-trains (AUC < 0.85) or is slow on-device, the demo runs on BKT with one config flip and zero code change. **Q:** For the final demo, do we cut over to DKT, or present DKT as "trained, validated, swappable" while demoing on BKT? (Mirrors spec §13 Open Question #5.) Risk: belief shapes differ (BKT scalar map vs DKT sequence), so persisted `mastery_state` is **not** interchangeable across a live cutover — switching backends should clear/rebuild belief from `interaction_log`, not load the other backend's saved state. This belief-shape incompatibility needs an explicit migration note in the synthetic-data/integration plan.
 
-5. **Synthetic-data schema lock.** The `.npz` schema + one-hot convention here is plan-defined because the synthetic-data plan doesn't exist yet. **Q:** When that plan is written, does it adopt this exact schema (`X`/`Y_skill`/`Y_correct`/`mask` + `skills.json`), or do we reconcile? The one-hot index convention is load-bearing across Python encoder, JS encoder, and the dataset — all three must agree.
+5. **Synthetic-data schema lock — RESOLVED.** The data-producer plan (`2026-05-22-synthetic-data-and-evaluation.md`) now exists and is the **single source of truth** for the training data. This plan was updated to consume the producer's **long-format Parquet** (`trajectories.parquet` + `trajectories.meta.json`) directly — there is no self-defined `.npz`/`skills.json` here anymore — and the one-hot convention is the producer's locked `dkt_input_idx = skill_idx*2 + correct`, identical in the Python encoder (`encode_interaction`/`frame_to_windows`), the JS encoder (`encodeInteraction`), and the dataset. **Remaining Q:** ordering of execution — the producer MUST be implemented before this plan's Task 5 (real training) / Task 9 (trained artifact). The placeholder model (Task 9) keeps everything else runnable in the meantime.
 
 6. **tfjs-node for the smoke test.** Pure `@tensorflow/tfjs` may not load a `file://` model under Node; the plan falls back to a `-D @tensorflow/tfjs-node` devDependency for the smoke/perf tests only (browser unaffected). **Q:** Accept the extra dev dependency, or gate the smoke test behind an env flag and rely on the in-browser verification (Task 10) instead?
 
@@ -1463,4 +1628,4 @@ git commit -m "docs(dkt): add training README and finalize pipeline"
 
 Plan complete and saved to `docs/superpowers/plans/2026-05-22-dkt-pipeline.md`.
 
-**Hard dependency:** Tasks 5 (real training) and 9 (trained artifact) are BLOCKED on the synthetic-data plan's `data/synthetic/trajectories.npz`. Everything else (env, model builder, encoder, masked training, AUC plumbing, tfjs export path, the full JS DKT backend, the feature flag, and the load/perf test scaffolds with a placeholder model) is executable now. Recommended order: write the synthetic-data plan next so the AUC gate can be run on real trajectories before the BKT→DKT cutover decision.
+**Hard dependency:** Tasks 5 (real training) and 9 (trained artifact) are BLOCKED on the **data-producer plan** (`2026-05-22-synthetic-data-and-evaluation.md`), which produces `data/synthetic/trajectories.parquet` + `trajectories.meta.json` in the LOCKED long-format schema this plan now consumes. **Implement the data-producer plan first.** Everything else (env, model builder, encoder, `frame_to_windows`/`load_dataset`, masked training, AUC plumbing, tfjs export path, the full JS DKT backend, the feature flag, and the load/perf test scaffolds with a placeholder model) is executable now via the in-test toy long-format fixture. Recommended order: implement the data producer, then run the AUC gate on real trajectories before the BKT→DKT cutover decision.

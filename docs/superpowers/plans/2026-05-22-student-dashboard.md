@@ -16,12 +16,14 @@
 
 ## Data sourcing decision (student fair-rank widget)
 
-The engine's on-device singleton only knows about **one** learner (the local student). A *leaderboard* needs the whole class. There is no cross-student data on the device. The plan resolves this with a **layered source with a graceful local-only fallback**:
+The engine's on-device singleton only knows about **one** learner (the local student). A *leaderboard* needs the whole class. There is no cross-student data on the device, and **there is no student-safe endpoint to fetch it from**: `GET /api/teacher/class-mastery` is teacher-only — the backend plan (`2026-05-22-backend-mastery-sync.md`) puts it behind a `requireTeacher` guard, so a logged-in student would get `403`. A student MUST NOT call the teacher endpoint.
 
-1. **Primary (online):** fetch the class roster from the same backend endpoint the TeacherDashboard uses — `GET /api/teacher/class-mastery` (defined in `2026-05-22-backend-mastery-sync.md`). It returns `{ students: [{ id, name, attempts, mastery }] }`, exactly the shape `classMastery(students).ranking` consumes. The local student is identified by `useAuthStore().user.id`.
-2. **Fallback (offline / endpoint missing / pre-backend):** build a single-element class from the local engine — `[{ id: 'me', name, attempts: total attempts, mastery: practiced-skills-only map }]`. `fairRanking` still runs (the student simply ranks #1 of 1), and the widget shows a "Class data offline — showing your standing" note. This keeps the offline-first USP intact and lets the widget ship **before** the backend lands.
+For **v1**, the widget is therefore **local-only** — it ranks a single-student "class" built from the on-device engine singleton:
 
-Because both paths feed the **same** `classMastery(students)` call, the component is backend-agnostic and fully testable by mocking the fetch. The student-side fetch reuses the teacher endpoint deliberately (one source of truth for fair ranking); if the project later wants a student-scoped endpoint, only the URL constant changes.
+- Build `[{ id, name, attempts: total attempts, mastery: practiced-skills-only map }]` from the local engine (`buildLocalClass(...)`, Task 2). `classMastery(students).ranking` still runs (the student simply ranks #1 of 1), and the widget shows a "Class data offline — showing your standing" note so the single-row result reads correctly. This keeps the offline-first USP intact and lets the widget ship **before** any class-wide backend exists.
+- There is **no `fetch` to the teacher endpoint** (or to any class endpoint) in this component. Tests inject the class via a `students` prop or exercise the local-fallback builder directly — no `fetch` mocking is required or permitted.
+
+Because the same `classMastery(students)` call feeds both the injected-prop path and the local-fallback path, the component is source-agnostic and fully testable without network mocks. A proper multi-student, *student-scoped* leaderboard is deferred until a student-safe endpoint exists (see Open Question 1).
 
 > NOTE: the engine's `getAllMastery()` returns a **dense** map (every skill at its `pL0=0.2` prior). The `fairRanking` contract requires **practiced-skills-only** mastery (passing the dense prior inflates breadth/observed-mean). The fallback builder therefore filters to skills the student has actually attempted. The plan derives "practiced" from `getAllMastery()` entries that differ from the prior, and documents this in `engineSource.js` (see Task 2).
 
@@ -555,13 +557,13 @@ git commit -m "feat(dashboard): add Time-to-refresh spaced-repetition prompts"
 
 ### Task 5: Fair-rank leaderboard widget
 
-Replaces the raw-XP `Leaderboard` widget. Fetches the class from `/api/teacher/class-mastery`; on any failure, falls back to the local single-student class (see "Data sourcing decision"). Ranks via `classMastery(students).ranking` and highlights the local student.
+Replaces the raw-XP `Leaderboard` widget. **v1 is local-only** (see "Data sourcing decision"): it ranks a single-student "class" built from the on-device engine singleton — it does **NOT** call `/api/teacher/class-mastery` (teacher-only, `403` for students) or any other class endpoint. Ranks via `classMastery(students).ranking` and highlights the local student.
 
 **Files:**
 - Create: `src/components/FairLeaderboard.jsx`
 - Test: `src/components/FairLeaderboard.test.jsx`
 
-> The widget takes `students` as an **optional prop** so tests can inject a class without mocking `fetch`; when the prop is absent it self-fetches and falls back. `classMastery(...).ranking` returns `[{ id, name, breadth, shrunkenMastery, score }]` already sorted by `score` desc. We show `breadth` skills and a 0–100 mastery percent. The local id comes from `useAuthStore().user?.id` (string) or `'me'`.
+> The widget takes `students` as an **optional prop** so a parent (or test) can inject a class. When the prop is absent it builds the **local-only** single-student class from the engine (`buildLocalClass(...)` over practiced-skills-only mastery) and shows the "Class data offline" note. There is no `fetch` and no `token` usage — so no network mocking in tests. `classMastery(...).ranking` returns `[{ id, name, breadth, shrunkenMastery, score }]` already sorted by `score` desc. We show `breadth` skills and a 0–100 mastery percent. The local id comes from `useAuthStore().user?.id` (string) or `'me'`. The effect/memo depends on `user?.id` (a primitive) — never the `user` object — so a store that returns a fresh object each render does not loop.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -571,24 +573,25 @@ Create `src/components/FairLeaderboard.test.jsx`:
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render } from '@testing-library/react';
 
+// NOTE: no `fetch` is mocked — v1 never calls the (teacher-only) class endpoint.
 vi.mock('../engine/engineAPI', () => ({
   classMastery: vi.fn(),
   getAllMastery: vi.fn(() => ({})),
 }));
 vi.mock('../store/useAuthStore', () => ({
-  useAuthStore: () => ({ user: { id: 'B', name: 'Bilal' }, token: null }),
+  useAuthStore: () => ({ user: { id: 'B', name: 'Bilal' } }),
 }));
 vi.mock('../store/usePlayerStore', () => ({
   usePlayerStore: () => ({ gamesPlayed: 3 }),
 }));
 
-import { classMastery } from '../engine/engineAPI';
+import { classMastery, getAllMastery } from '../engine/engineAPI';
 import FairLeaderboard from './FairLeaderboard';
 
 describe('FairLeaderboard', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders the fair ranking and highlights the local student', () => {
+  it('renders the fair ranking from an injected class and highlights the local student', () => {
     classMastery.mockReturnValue({
       perSkill: {},
       ranking: [
@@ -607,14 +610,31 @@ describe('FairLeaderboard', () => {
     expect(classMastery).toHaveBeenCalledWith(students);
   });
 
-  it('shows the offline note when it falls back to a local-only class', () => {
+  it('builds a local-only class (no fetch) and shows the offline note when no students prop is given', () => {
+    // Engine reports practiced skills for the local student.
+    getAllMastery.mockReturnValue({ addition: 0.8, counting: 0.2 /* prior, dropped */ });
     classMastery.mockReturnValue({
       perSkill: {},
-      ranking: [{ id: 'B', name: 'Bilal', breadth: 0, shrunkenMastery: 0.2, score: 0 }],
+      ranking: [{ id: 'B', name: 'Bilal', breadth: 1, shrunkenMastery: 0.8, score: 0.8 }],
     });
-    // No students prop and no successful fetch -> local fallback path.
-    const { getByText } = render(<FairLeaderboard students={[{ id: 'B', name: 'Bilal', attempts: 0, mastery: {} }]} offline />);
+
+    const { getByText } = render(<FairLeaderboard />);
+
+    // The "class" is the single local student, built from the engine — NOT a fetch.
+    expect(classMastery).toHaveBeenCalledWith([
+      { id: 'B', name: 'Bilal', attempts: 3, mastery: { addition: 0.8 } },
+    ]);
     expect(getByText(/Class data offline/i)).toBeInTheDocument();
+    expect(getByText(/Bilal/)).toBeInTheDocument();
+  });
+
+  it('never references a global fetch (no network call in v1)', () => {
+    getAllMastery.mockReturnValue({});
+    classMastery.mockReturnValue({ perSkill: {}, ranking: [] });
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    render(<FairLeaderboard />);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
 ```
@@ -628,52 +648,40 @@ Expected: FAIL (module not found).
 
 Create `src/components/FairLeaderboard.jsx`:
 ```jsx
-import { useEffect, useState } from 'react';
+import { useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { classMastery, getAllMastery } from '../engine/engineAPI';
 import { buildLocalClass } from '../engine/engineSource';
 import { useAuthStore } from '../store/useAuthStore';
 import { usePlayerStore } from '../store/usePlayerStore';
 
-const CLASS_ENDPOINT = 'http://localhost:5000/api/teacher/class-mastery';
 const RANK_BADGE = ['🥇', '🥈', '🥉'];
 
-// students prop: inject for tests / when a parent already has the class.
-// offline prop: force the "class data offline" note (tests).
-export default function FairLeaderboard({ students = null, offline = false, compact = true }) {
-  const { user, token } = useAuthStore();
+// v1 is LOCAL-ONLY: it never calls /api/teacher/class-mastery (teacher-only, 403
+// for students) or any class endpoint. When no `students` prop is injected it ranks
+// a single-student class built from the on-device engine singleton.
+//
+// students prop: inject for tests / when a parent already has a class.
+export default function FairLeaderboard({ students = null, compact = true }) {
+  const { user } = useAuthStore();
   const { gamesPlayed } = usePlayerStore();
-  const [cls, setCls] = useState(students);
-  const [isOffline, setIsOffline] = useState(offline || students === null ? offline : false);
-
-  useEffect(() => {
-    if (students) { setCls(students); return; }
-    let cancelled = false;
-    (async () => {
-      try {
-        const resp = await fetch(CLASS_ENDPOINT, {
-          headers: token ? { Authorization: `Bearer ${token}` } : {},
-        });
-        if (!resp.ok) throw new Error('class-mastery fetch failed');
-        const data = await resp.json();
-        if (!cancelled) { setCls(data.students || []); setIsOffline(false); }
-      } catch {
-        // Offline / endpoint missing: rank the local student alone.
-        if (!cancelled) {
-          setCls(buildLocalClass({
-            id: user?.id || 'me',
-            name: user?.name || 'You',
-            attempts: gamesPlayed || 0,
-            allMastery: getAllMastery(),
-          }));
-          setIsOffline(true);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [students, token, user, gamesPlayed]);
-
   const localId = user?.id || 'me';
+
+  // Depend on PRIMITIVES (localId, user?.name, gamesPlayed) — never the `user`
+  // object — so a store that returns a fresh object each render doesn't thrash.
+  const cls = useMemo(() => {
+    if (students) return students;
+    return buildLocalClass({
+      id: localId,
+      name: user?.name || 'You',
+      attempts: gamesPlayed || 0,
+      allMastery: getAllMastery(), // practicedMastery() filter lives in buildLocalClass
+    });
+  }, [students, localId, user?.name, gamesPlayed]);
+
+  // The local-only single-student view is, by definition, "offline" class data.
+  const isOffline = !students;
+
   const ranking = cls && cls.length ? classMastery(cls).ranking : [];
   const rows = (compact ? ranking.slice(0, 5) : ranking).map((r, i) => ({ ...r, rank: i + 1 }));
 
@@ -811,7 +819,7 @@ Create `src/components/MasteryChart.jsx`:
 ```jsx
 import { motion } from 'framer-motion';
 import { BarChart, Bar, XAxis, YAxis, Cell, ResponsiveContainer, Tooltip } from 'recharts';
-import { getAllMastery, } from '../engine/engineAPI';
+import { getAllMastery } from '../engine/engineAPI';
 import { practicedMastery, skillLabel } from '../engine/engineSource';
 
 const TOOLTIP_STYLE = {
@@ -1052,7 +1060,9 @@ git commit -m "feat(dashboard): wire adaptive-engine cards into StudentDashboard
 
 **2. Placeholder scan:** No "TBD"/"similar to above". Every code step has complete JSX/code, real className patterns lifted from `StudentDashboard.jsx`, and real engine imports. ✅
 
-**3. Engine-API consistency:** All four components import only from `engineAPI` (`suggestNext`, `getDueReviews`, `getAllMastery`, `classMastery`) and `knowledgeGraph` (`SKILLS`/`getGamesForSkill`); none redefine engine logic. `classMastery` is called with the documented `[{ id, name, attempts, mastery }]` shape (Task 5 + fallback builder in Task 2). The `practicedMastery` filter matches the engine README's "pass only practiced skills, not a dense BKT map" rule. ✅
+**3. Engine-API consistency:** All four components import only from `engineAPI` (`suggestNext`, `getDueReviews`, `getAllMastery`, `classMastery`) and `knowledgeGraph` (`SKILLS`/`getGamesForSkill`); none redefine engine logic. `classMastery` is called with the documented `[{ id, name, attempts, mastery }]` shape (Task 5 local builder + `buildLocalClass` in Task 2). The `practicedMastery` filter matches the engine README's "pass only practiced skills, not a dense BKT map" rule. ✅
+
+**3a. Role-safe data sourcing:** `FairLeaderboard` is **local-only** in v1 — it never calls `/api/teacher/class-mastery` (teacher-only, `requireTeacher`/`403` for students) or any class endpoint. No `fetch`, no token. A real multi-student student-scoped leaderboard is deferred to a future student-safe endpoint (Open Question 1). ✅
 
 **4. Redesign preserved:** New cards reuse the exact existing card chrome (`bg-white rounded-xl ... border-2 border-white/80 shadow-[...]` and the `px-3 py-2.5 ... border-b` header pattern). No existing card's classes change; only insertions + one block replacement. ✅
 
@@ -1062,7 +1072,7 @@ git commit -m "feat(dashboard): wire adaptive-engine cards into StudentDashboard
 
 ## Open Questions
 
-1. **Single source of truth for the leaderboard:** the student widget reuses the teacher endpoint `/api/teacher/class-mastery`. Is that endpoint authorized for the **student** role, or do we need a student-scoped variant (e.g. `/api/class-mastery`)? (Decided in `2026-05-22-backend-mastery-sync.md` — flag if students can't call it.)
+1. **Student-safe multi-student leaderboard endpoint (BLOCKER for a *real* class leaderboard):** `/api/teacher/class-mastery` is teacher-only (`requireTeacher` guard in `2026-05-22-backend-mastery-sync.md`), so a student **cannot** call it — confirmed. v1 therefore ships a **local-only single-student** fair-rank widget. A genuine class-wide leaderboard for students needs a new **student-scoped** endpoint (e.g. `GET /api/class-mastery` returning only the caller's own class, name-anonymized per Open Question 4) that returns the same `{ students: [{ id, name, attempts, mastery }] }` shape `classMastery()` consumes. Until that exists, do NOT wire any class fetch into the student widget. **Owner: backend plan.** When it lands, the only change here is to inject the fetched class as the `students` prop (the local builder remains the offline fallback).
 2. **Engine freshness:** the dashboard reads the singleton on render. If a game updates mastery and navigates back without a remount, the cards may show stale data. Do we need a lightweight engine event/subscription, or is route remount sufficient for v1? (App router behavior dependent.)
 3. **`Leaderboard.jsx` retirement:** the old raw-XP component is left in place (a separate `/student/leaderboard` route may still use it). Should a follow-up plan migrate that full-page leaderboard to fair-rank too, or keep XP there for the gamification feel?
 4. **Privacy:** the fair-rank widget shows classmates' names. For the rural-school context, is showing peer names acceptable, or should it anonymize (e.g. "Classmate #3") and only reveal the local student? (Product/guide decision.)

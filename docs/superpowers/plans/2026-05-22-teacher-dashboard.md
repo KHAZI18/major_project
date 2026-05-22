@@ -4,7 +4,7 @@
 
 **Goal:** Surface the already-built Adaptive Learning Engine (`src/engine/`) in `TeacherDashboard.jsx` by (1) replacing the hardcoded `xp > 5000` / `xp > 1000` status thresholds with **per-skill mastery** derived from `classMastery(students)`, (2) adding a **per-skill mastery heatmap** (students × skills), (3) adding **per-skill weakness alerts** (skills below a class-wide threshold), and (4) adding a **fair-rank table next to the existing XP table** (both visible — the XP table is NOT deleted). All new components are unit-tested with `@testing-library/react` under a `jsdom` Vitest environment.
 
-**Architecture:** The teacher dashboard consumes the class roster from the backend endpoint `GET /api/teacher/class-mastery` (defined in the separate backend plan `2026-05-22-backend-mastery-sync.md`), which returns `{ students: [{ id, name, grade, attempts, mastery }] }`. The dashboard imports **only** from `src/engine/engineAPI.js` (`classMastery`) and reads skill labels from `src/engine/knowledgeGraph.js`. New work is **additive** — three small presentational components (`MasteryHeatmap`, `WeaknessAlerts`, `FairRankTable`) wired into the existing layout without restyling the recent redesign. Tests mock the endpoint shape.
+**Architecture:** The teacher dashboard consumes the class roster from the backend endpoint `GET /api/teacher/class-mastery` (defined in the separate backend plan `2026-05-22-backend-mastery-sync.md`), which returns a **bare JSON array** `[{ id, name, attempts, mastery }]` (NOT a `{ students: [...] }` envelope, and NOT carrying a `grade` field — see the locked shape in that plan's "Decisions" section). The dashboard imports **only** from `src/engine/engineAPI.js` (`classMastery`) and reads skill labels from `src/engine/knowledgeGraph.js`. New work is **additive** — three small presentational components (`MasteryHeatmap`, `WeaknessAlerts`, `FairRankTable`) wired into the existing layout without restyling the recent redesign. Tests mock the endpoint shape.
 
 **Tech Stack:** React 19, Vitest 4 (already present), `@testing-library/react` + `jsdom` + `@testing-library/jest-dom` (added by the Student Dashboard plan's Task 1; this plan reuses that setup), `framer-motion` (present), `recharts` (present — used by the existing charts), `lucide-react` (present — `AlertTriangle`, `Target` already imported).
 
@@ -18,24 +18,24 @@
 
 ## Backend data contract this plan consumes (mocked in tests)
 
-`GET /api/teacher/class-mastery` (Authorization: Bearer <teacher token>) returns:
+`GET /api/teacher/class-mastery` (Authorization: Bearer <teacher token>; teacher-role-guarded by the backend plan) returns a **bare JSON array** (this is the shape **locked** by `2026-05-22-backend-mastery-sync.md` Task 5 — `res.send(rows)` where `rows = [{ id, name, attempts, mastery }]`):
 
 ```json
-{
-  "students": [
-    {
-      "id": "65f...",
-      "name": "Priya S.",
-      "grade": 5,
-      "attempts": 142,
-      "mastery": { "addition": 0.92, "subtraction": 0.88, "fractions-basic": 0.41 }
-    }
-  ]
-}
+[
+  {
+    "id": "65f...",
+    "name": "Priya S.",
+    "attempts": 142,
+    "mastery": { "addition": 0.92, "subtraction": 0.88, "fractions-basic": 0.41 }
+  }
+]
 ```
 
-- `mastery` contains **only practiced skills** (sparse) — the same contract `classMastery(students)` expects (a dense BKT-prior map would inflate aggregates). The backend plan is responsible for sparsifying.
+- **No envelope:** the response is the array itself, NOT `{ "students": [...] }`. The dashboard must consume `await resp.json()` directly as the array.
+- **No `grade` field:** the backend's reshape returns only `id`, `name`, `attempts`, `mastery`. The dashboard's mastery views must NOT depend on `grade` from this payload (the XP table's `grade` continues to come from `/api/teacher/students`). The heatmap therefore treats `grade` as optional.
+- `mastery` contains **only attempted skills** (sparse — keys present in `masteryState.attempts`) — the same contract `classMastery(students)` / `fairRanking` expects (a dense BKT-prior map would inflate aggregates). The backend plan is responsible for sparsifying. A student with no `masteryState` returns `attempts: 0, mastery: {}` (empty object, never missing — safe for `Object.keys(s.mastery)` in `fairRanking`).
 - The dashboard derives everything else (status, heatmap cells, weakness alerts, fair rank) from this single payload via `classMastery(students)` → `{ perSkill, ranking }`. The existing XP/accuracy/streak fields stay sourced from the current `/api/teacher/students` fetch and the existing `MOCK_STUDENTS` fallback — the two data sources coexist (XP table = old endpoint; mastery views = new endpoint).
+- **Auth:** this is a teacher dashboard, so the page assumes an authenticated teacher (`token` from `useAuthStore`). If the endpoint returns **401/403** (no/invalid token, or a non-teacher caller once the backend adds `requireTeacher`), the fetch is treated like any other failure: the mastery views fall back to the synthesized `MOCK_STUDENTS` mastery and a `console.warn` is logged — the page never crashes and the XP table still renders.
 
 ---
 
@@ -652,7 +652,7 @@ import { classMastery } from '../engine/engineAPI';
 
 Inside the component, after the existing `const [sortBy, setSortBy] = useState('xp');` line, add:
 ```jsx
-  const [classMasteryData, setClassMasteryData] = useState([]); // [{ id, name, grade, attempts, mastery }]
+  const [classMasteryData, setClassMasteryData] = useState([]); // [{ id, name, attempts, mastery }] — bare array from /api/teacher/class-mastery (no grade)
 ```
 
 - [ ] **Step 2: Fetch class-mastery and recompute status from it**
@@ -694,6 +694,8 @@ with:
   const fetchStudents = async () => {
     setLoading(true);
     // Fetch the adaptive-engine class mastery alongside the XP roster.
+    // The backend (2026-05-22-backend-mastery-sync.md) returns a BARE ARRAY
+    // [{ id, name, attempts, mastery }] — NOT a { students: [...] } envelope.
     let masteryById = {};
     try {
       const mResp = await fetch('http://localhost:5000/api/teacher/class-mastery', {
@@ -701,9 +703,16 @@ with:
       });
       if (mResp.ok) {
         const mData = await mResp.json();
-        const list = mData.students || [];
+        // Consume the array directly (defensive: also accept a legacy { students } envelope).
+        const list = Array.isArray(mData) ? mData : (mData?.students ?? []);
         setClassMasteryData(list);
         masteryById = Object.fromEntries(list.map((s) => [s.id, s.mastery || {}]));
+      } else if (mResp.status === 401 || mResp.status === 403) {
+        // Not authenticated as a teacher (the backend guards this route by role).
+        // Fall through to the XP-status / mock-mastery path; do not crash the page.
+        console.warn('class-mastery: not authorized (', mResp.status, ') — using XP-status fallback');
+      } else {
+        console.warn('class-mastery: unexpected status', mResp.status, '— using XP-status fallback');
       }
     } catch (e) {
       console.warn('class-mastery unavailable, falling back to XP status', e);
@@ -749,7 +758,13 @@ with:
 After the existing `const displayStudents = students.length > 0 ? students : MOCK_STUDENTS;` line, add a class-mastery display source so the heatmap/alerts/fair-rank render with the mock roster when the endpoint is absent (keeps the dashboard demoable offline):
 ```jsx
   // Class-mastery source for the new engine views. Falls back to a synthesized
-  // mastery map derived from each mock student's accuracy when the endpoint is empty.
+  // mastery map derived from each mock student's accuracy when the endpoint is
+  // empty/unauthorized (keeps the dashboard demoable offline). NOTE: the LIVE
+  // payload does NOT carry `grade`; only this offline fallback adds it (from
+  // MOCK_STUDENTS) so the heatmap's optional grade column has data in demo mode.
+  // Values are clamped to [0.02, 0.99] so a low-accuracy skill still surfaces as
+  // "weak" (weakSkills filters out mean <= 0, so we never synthesize 0/negative).
+  const clamp = (v) => Math.max(0.02, Math.min(0.99, v));
   const displayMastery = classMasteryData.length > 0
     ? classMasteryData
     : MOCK_STUDENTS.map((s) => ({
@@ -758,11 +773,11 @@ After the existing `const displayStudents = students.length > 0 ? students : MOC
         grade: s.grade,
         attempts: s.gamesPlayed,
         mastery: {
-          addition: Math.min(0.99, s.accuracy / 100),
-          subtraction: Math.min(0.99, (s.accuracy - 5) / 100),
-          multiplication: Math.min(0.99, (s.accuracy - 10) / 100),
-          'fractions-basic': Math.min(0.99, (s.accuracy - 20) / 100),
-          patterns: Math.min(0.99, (s.accuracy - 8) / 100),
+          addition: clamp(s.accuracy / 100),
+          subtraction: clamp((s.accuracy - 5) / 100),
+          multiplication: clamp((s.accuracy - 10) / 100),
+          'fractions-basic': clamp((s.accuracy - 20) / 100),
+          patterns: clamp((s.accuracy - 8) / 100),
         },
       }));
   const classAgg = displayMastery.length ? classMastery(displayMastery) : { perSkill: {}, ranking: [] };
@@ -917,7 +932,7 @@ git commit -m "feat(teacher): wire heatmap, weakness alerts, and fair-rank table
 
 **2. Placeholder scan:** No "TBD"/"similar to above". Every code step has complete JSX/code; real className patterns (`rounded-[40px] p-8 shadow-sm border border-slate-50`, `badge badge-primary`, `w-full border-collapse text-left text-sm`) and the real existing `fetchStudents` body are reproduced verbatim before being replaced. ✅
 
-**3. Engine-API consistency:** `classMastery` is called with the documented `[{ id, name, attempts, mastery }]` shape (Task 6 `displayMastery`, Task 5/7 props). `perSkill` (means) and `ranking` are read exactly as the engine returns them. Pure helpers (`teacherSource.js`) only import labels from `knowledgeGraph` and never reimplement engine logic. The "practiced skills only / sparse mastery" rule is honored — the backend contract section states the payload is sparse, and `meanPracticedMastery`/`buildHeatmapMatrix` treat missing skills as null, not prior. ✅
+**3. Engine-API consistency:** `classMastery` is called with the documented `[{ id, name, attempts, mastery }]` shape (Task 6 `displayMastery`, Task 5/7 props) — which matches the **bare array** the backend plan locks (`res.send(rows)`, no `{ students }` envelope, no `grade`). `perSkill` (means) and `ranking` (`{ id, name, breadth, shrunkenMastery, score }`, sorted by `score` desc) are read exactly as `classMastery` / `fairRanking` return them. Every row passed to `classMastery` carries a `mastery` object (the backend returns `{}` for un-practiced students, and the offline fallback always synthesizes one), so `fairRanking`'s non-optional `Object.keys(s.mastery)` never throws. Pure helpers (`teacherSource.js`) only import labels from `knowledgeGraph` and never reimplement engine logic. The "practiced skills only / sparse mastery" rule is honored — the backend contract section states the payload is sparse, and `meanPracticedMastery`/`buildHeatmapMatrix` treat missing skills as null, not prior. ✅
 
 **4. Redesign preserved + XP table kept:** New sections reuse the existing card chrome (`bg-white rounded-[40px] p-8 shadow-sm border border-slate-50`) and the roster table's class names. The existing Weekly Progress / Skill Mastery / Grade Mix / Needs Support / Class Roster blocks are untouched; the XP roster table is explicitly retained (Self-Review item per spec "show both"). Only additions + one status-logic swap inside `fetchStudents`. ✅
 
@@ -935,5 +950,7 @@ git commit -m "feat(teacher): wire heatmap, weakness alerts, and fair-rank table
 4. **Heatmap density:** 13 skills × up to ~30 students may overflow horizontally on a phone. The grid scrolls horizontally; is that acceptable for the teacher (likely on tablet/desktop), or do we need a "top N weakest skills only" condensed mode for mobile?
 5. **Mock-mastery fallback realism:** Task 6 Step 3 synthesizes mastery from `accuracy` for the offline/demo path. Is that acceptable for the Dean demo, or should the demo always run against a seeded backend so the heatmap reflects real engine output?
 6. **Two endpoints, one roster:** XP fields come from `/api/teacher/students` and mastery from `/api/teacher/class-mastery`, joined by id. Should the backend instead return a single merged payload to avoid the join and a second round-trip? (Backend-plan decision.)
+7. **Sibling-plan envelope drift (cross-plan, flag for the guide):** the backend plan (`2026-05-22-backend-mastery-sync.md`, the source of truth) returns a **bare array** `[{ id, name, attempts, mastery }]`. This teacher plan has been reconciled to that. However, the **student-dashboard** sibling plan (`2026-05-22-student-dashboard.md`, "Data sourcing decision") still documents the same endpoint as returning `{ students: [{ id, name, attempts, mastery }] }`. That sibling plan must be corrected separately (out of scope for this review) so both consumers agree with the backend. The defensive `Array.isArray(mData) ? mData : (mData?.students ?? [])` guard added here tolerates either form, but the backend will only ever send the array.
+8. **`grade` source for the heatmap:** the live `class-mastery` payload has no `grade`, so the heatmap's optional grade column is populated only in the offline/demo path (from `MOCK_STUDENTS`). If the teacher needs per-grade heatmap grouping against live data, the backend reshape must add `grade` (it is available on the `User` doc), or the dashboard must join `grade` from the `/api/teacher/students` roster by id.
 </content>
 </invoke>

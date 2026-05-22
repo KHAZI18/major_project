@@ -6,7 +6,9 @@
 
 **Architecture:** A small, dependency-light Python package under `scripts/eval/` plus two CLI entry-point scripts. The simulator re-encodes the 13-skill knowledge graph from `src/engine/knowledgeGraph.js` in pure Python (`scripts/eval/knowledge_graph.py`) — it MUST stay in sync (flagged as an open question; a sync-check test guards the skill count). The A/B harness **reimplements** the JS decision logic (`decisionLayer.js`) in Python rather than calling Node — justified below — so the whole evaluation runs in one `python` process with no Node bridge. The simulator writes a columnar **Parquet** trajectory file (with a CSV fallback) whose schema is locked here for the separate DKT plan (`2026-05-22-dkt-pipeline.md`) to consume.
 
-**Tech Stack:** Python 3.12 (existing `venv/`), `numpy` (RNG + arrays), `pandas` + `pyarrow` (trajectory I/O), `scikit-learn` (`roc_auc_score`, `brier_score_loss`), `pytest` (tests). All NEW — the venv currently has only `PyPDF2`. No TensorFlow/PyTorch in this plan (training lives in the DKT plan).
+**Tech Stack:** Python 3.9 (existing `venv/` reports `3.9.6`; the system `python3` is 3.12 but the venv is what we use), `numpy` (RNG + arrays), `pandas` + `pyarrow` (trajectory I/O), `scikit-learn` (`roc_auc_score`, `brier_score_loss`), `pytest` (tests). All NEW — the venv currently has only `PyPDF2`. No TensorFlow/PyTorch in this plan (training lives in the DKT plan).
+
+> **Python 3.9 compatibility (LOAD-BEARING):** the venv is **3.9.6**, NOT 3.12. Every module below begins with `from __future__ import annotations`, which makes builtin-generic annotations (`list[str]`, `dict[str, float]`) and PEP-604 unions (`dict | None`) legal *as annotations* on 3.9 (they are stored as strings, never evaluated). The DKT plan reads the same `.npz` on the same venv. The pinned wheels (numpy 1.26.4, pandas 2.2.2, pyarrow 16.1.0, scikit-learn 1.5.0) all publish cp39 wheels, so they install on 3.9.6. Do NOT use 3.10-only runtime constructs (e.g. `match`, `X | Y` in a non-annotation runtime position, `int | None` passed to `isinstance`).
 
 **Spec reference:** `docs/superpowers/specs/2026-05-19-adaptive-learning-engine-design.md` — this plan implements §5.3 (synthetic learners / BKT simulator), §8.1 (model accuracy/AUC + ASSISTments-2009 hook), §8.2 (simulated A/B learning gains), and §8.4 (ablations). It does **not** implement §5.1–5.2/5.4 (DKT architecture/training/export) or §8.3 (on-device latency).
 
@@ -30,6 +32,9 @@
 | `scripts/eval/schema.py` | Column names, dtypes, and (skill,correct) one-hot encoding helpers — the locked trajectory contract (new) |
 | `scripts/eval/metrics.py` | `next_correct_auc`, `per_skill_brier`, A/B post-test scoring, ablation runners (new) |
 | `scripts/eval/io.py` | Parquet/CSV read/write of trajectory datasets (new) |
+| `scripts/eval/sequences.py` | Long-format → padded DKT `.npz` builder (the locked `data/dkt_sequences.npz` contract) (new) |
+| `scripts/build_dkt_sequences.py` | CLI: trajectory Parquet/CSV → `data/dkt_sequences.npz` for the DKT plan (new) |
+| `tests/test_sequences.py` | `.npz` array names/shapes/dtypes, shift correctness, padding/mask, encoding round-trip (new) |
 | `scripts/simulate_students.py` | CLI: generate N students × ~M interactions → trajectory file (new) |
 | `scripts/evaluate.py` | CLI: run §8.1 AUC, §8.2 A/B, §8.4 ablations; print a metrics report (new) |
 | `scripts/eval/baseline_predictor.py` | A reference next-correct predictor (BKT one-step) so §8.1 AUC is testable WITHOUT a trained DKT model (new) |
@@ -60,6 +65,26 @@ One row per interaction, ordered by `(student_id, step_idx)`. Long format (not p
 
 Sidecar `*.meta.json` records: `num_skills`, `skill_ids` (ordered), `num_students`, `seed`, `max_interactions`, `git_sha_of_knowledge_graph_js`, `schema_version`. The DKT plan asserts `num_skills == 13` and `dkt_input_idx == skill_idx*2 + correct` on load.
 
+**Training-ready `data/dkt_sequences.npz` contract (LOCKED — the DKT plan loads THIS, do not let DKT re-derive its own encoding):**
+
+This plan ALSO emits a padded, training-ready NumPy archive that the DKT pipeline's `load_dataset()` reads directly. Per-student sequences are sorted by `step_idx`, **truncated to the LAST `SEQ_LEN=50` interactions** (keep the most recent), and padded at the FRONT with zero-vectors. The standard DKT input/target SHIFT is baked in here so the DKT plan trains exactly as its `make_toy_dataset` fixture does: at timestep `t`, the input is the one-hot of the **previous** interaction and the target is the **current** interaction.
+
+`np.savez_compressed("data/dkt_sequences.npz", ...)` writes EXACTLY these arrays (names are load-bearing — DKT's `load_dataset` does `d[k] for k in ("X","Y_skill","Y_correct","mask")`, plus reads `skill_ids`/`num_skills`):
+
+| Array name | Shape | Dtype | Meaning |
+|---|---|---|---|
+| `X` | `(N, 50, 26)` | `float32` | dense one-hot of the **previous** interaction at each step; `X[i,0]` is all-zeros (no prior). One-hot index = `dkt_input_idx = skill_idx*2 + correct`. |
+| `Y_skill` | `(N, 50, 13)` | `float32` | one-hot of the **current** step's skill index (the skill the next-correct prediction targets). |
+| `Y_correct` | `(N, 50)` | `float32` | current step's correctness (0.0/1.0) — the next-step BCE label. |
+| `mask` | `(N, 50)` | `float32` | 1.0 for real steps, 0.0 for front-padding. |
+| `input_idx` | `(N, 50)` | `int16` | redundant index form of `X`: the `dkt_input_idx` of the previous interaction (-1 / 0-masked at padded steps; equals `argmax(X)` on real steps). Convenience for index-based encoders; `X` is canonical. |
+| `target_skill_idx` | `(N, 50)` | `int16` | `argmax(Y_skill)` per real step (current skill index); 0 at padded steps (use `mask`). |
+| `skill_ids` | `(13,)` | `<U16` (unicode str) | ordered skill ids echoed from the meta sidecar — the single source of skill ordering. |
+| `num_skills` | scalar `()` | `int64` | `13`, echoed from meta. |
+| `seq_len` | scalar `()` | `int64` | `50`. |
+
+`N` = number of students. The DKT plan's `load_dataset` uses only `X, Y_skill, Y_correct, mask`; `input_idx`/`target_skill_idx`/`skill_ids`/`num_skills`/`seq_len` are extra metadata it MAY assert against (`num_skills == 13`, `skill_ids` order matches its graph). Padding is FRONT (left) so the last real interaction is always at `t=49` when a student has ≥50 steps; students with `<50` steps are padded on the left and masked.
+
 ---
 
 ### Task 1: Python environment + requirements
@@ -79,13 +104,14 @@ Run:
 ./venv/bin/python3 --version
 ./venv/bin/pip list
 ```
-Expected: Python 3.12.x; only `pip`, `PyPDF2`, `setuptools`, `typing_extensions`. (Confirms numpy/scipy/pandas/scikit-learn are NOT yet installed.)
+Expected: **Python 3.9.6** (the venv is 3.9, NOT the system 3.12); only `pip` (21.2.4), `PyPDF2` (3.0.1), `setuptools` (58.0.4), `typing_extensions` (4.15.0). (Confirms numpy/scipy/pandas/scikit-learn are NOT yet installed.) If `--version` instead reports 3.12, you are accidentally using the system interpreter — always invoke `./venv/bin/python3`, never bare `python3`.
 
 - [ ] **Step 2: Write `requirements.txt`**
 
 Create `requirements.txt`:
 ```text
-# Synthetic data generator + evaluation harness (scripts/). Python 3.12.
+# Synthetic data generator + evaluation harness (scripts/). Python 3.9 (venv is 3.9.6).
+# All pins below ship cp39 wheels.
 numpy==1.26.4
 pandas==2.2.2
 pyarrow==16.1.0
@@ -102,7 +128,7 @@ Run:
 ./venv/bin/pip install --upgrade pip
 ./venv/bin/pip install -r requirements.txt
 ```
-Expected: all five packages install. If `pip` is too old to resolve wheels (the venv ships pip 21.2.4), the `--upgrade pip` line fixes it; record the resulting pip version in the commit message. Verify:
+Expected: all five packages install. The venv ships **pip 21.2.4**, which is too old to reliably resolve modern manylinux/macos wheels — the `--upgrade pip` line is REQUIRED (target pip ≥ 23); record the resulting pip version in the commit message. On 3.9.6 the resolver must pick the cp39 wheels of every pin above. Verify:
 ```bash
 ./venv/bin/python3 -c "import numpy, pandas, pyarrow, sklearn; print(numpy.__version__, pandas.__version__, pyarrow.__version__, sklearn.__version__)"
 ```
@@ -144,6 +170,8 @@ __pycache__/
 .pytest_cache/
 data/synthetic/
 *.parquet
+*.npz
+data/dkt_sequences.npz
 ```
 
 - [ ] **Step 7: Smoke-test pytest discovery**
@@ -792,6 +820,8 @@ Golden tests in tests/test_decision.py mirror decisionLayer.test.js verbatim.
 """
 from __future__ import annotations
 
+import math
+
 from scripts.eval.knowledge_graph import (
     MASTERY_CUTOFF,
     SKILL_IDS,
@@ -841,7 +871,10 @@ def update_review(prev: dict, correct: bool, now: float = 0.0) -> dict:
     if correct:
         return {
             "ease": min(2.5, prev["ease"] + 0.1),
-            "interval": round(prev["interval"] * prev["ease"]),
+            # JS Math.round is half-UP; Python round() is banker's rounding
+            # (round(2.5)==2). The SM-2 golden values (1*2.5 -> 3, 3*2.5 -> 8)
+            # require half-up, so use floor(x + 0.5). Do NOT use bare round().
+            "interval": math.floor(prev["interval"] * prev["ease"] + 0.5),
             "last_reviewed": now,
             "reps": prev["reps"] + 1,
         }
@@ -861,17 +894,9 @@ def due_for_review(review_map: dict[str, dict], now: float = 0.0) -> list[str]:
     return [sid for sid, r in review_map.items() if is_due(r, now)]
 ```
 
-> Python's `round()` uses banker's rounding while JS `Math.round` rounds half-up. For the SM-2 values that actually occur (`1*2.5=2.5 -> 3` vs `2` differ!), guard this: `round(2.5)` in Python is `2`, but JS gives `3`. **The golden test expects 3**, so the implementation MUST round half-up. Fix `update_review` to use explicit half-up rounding:
-```python
-import math
-# replace the interval line in update_review's correct branch with:
-            "interval": math.floor(prev["interval"] * prev["ease"] + 0.5),
-```
-Apply this before running the test (the test for `interval == 3` proves it).
+> **SM-2 rounding (already correct above).** Python's `round()` uses banker's rounding (`round(2.5)==2`) while JS `Math.round` rounds half-up (`Math.round(2.5)==3`). The golden values that actually occur (`1*2.5 -> 3`, `3*2.5 -> 8`) require half-up, so the implementation uses `math.floor(prev["interval"] * prev["ease"] + 0.5)` — NOT bare `round()`. The `interval == 3` test proves it.
 
-- [ ] **Step 4: Apply the half-up rounding fix, then run to verify it passes**
-
-Edit `update_review` so the correct-branch interval uses `math.floor(prev["interval"] * prev["ease"] + 0.5)` and add `import math` at the top.
+- [ ] **Step 4: Run to verify it passes**
 ```bash
 ./venv/bin/python3 -m pytest tests/test_decision.py
 ```
@@ -936,22 +961,32 @@ def test_output_shape_and_schema():
 
 
 def test_prereq_learn_gate_respected():
-    """A skill's latent ability must not grow above the gate until prereqs > gate.
+    """A gated skill's latent ability must NOT grow until its prereq crosses the gate.
 
-    We track ground-truth latent_ability: for any interaction on a skill whose
-    prereqs were NOT yet learnable, ability must stay near its prior (<= gate).
+    `latent_ability` is recorded BEFORE each step's learning update, and gated
+    skills are seeded strictly below the gate (sample_student_params). Subtlety:
+    the simulator gates division on multiplication's POST-update ability, but we
+    only observe multiplication's PRE-update value in the rows. So a division row
+    may legitimately have grown one step after the recorded multiplication value
+    is still <= gate. We therefore assert the gate only while NO prior
+    multiplication row has been recorded at the gate yet (running-max strictly
+    below the gate by more than one max learn step is overkill — instead we stop
+    asserting as soon as multiplication is first recorded >= gate - eps).
     """
+    EPS = 0.05  # covers exactly the one-step PRE->POST lookahead at the boundary
     df = simulate_dataset(num_students=50, max_interactions=80, seed=7)
-    # division requires multiplication > 0.5. Find division rows where the student's
-    # max multiplication latent_ability so far is <= gate; division ability must be low.
     for sid, g in df.groupby("student_id"):
         g = g.sort_values("step_idx")
         mult_running_max = 0.0
         for _, row in g.iterrows():
             if row["skill_id"] == "multiplication":
-                mult_running_max = max(mult_running_max, row["latent_ability"])
-            if row["skill_id"] == "division" and mult_running_max <= PREREQ_LEARN_GATE:
-                assert row["latent_ability"] <= PREREQ_LEARN_GATE + 0.05
+                mult_running_max = max(mult_running_max, float(row["latent_ability"]))
+            # Only assert while multiplication is still clearly below the gate;
+            # once it approaches the gate the POST-update value may have unlocked
+            # division, so the invariant no longer applies.
+            if (row["skill_id"] == "division"
+                    and mult_running_max < PREREQ_LEARN_GATE - EPS):
+                assert float(row["latent_ability"]) <= PREREQ_LEARN_GATE
 
 
 def test_determinism():
@@ -1017,9 +1052,17 @@ class StudentParams:
 
 
 def sample_student_params(rng: np.random.Generator) -> StudentParams:
+    # Low prior latent ability. A skill that HAS prerequisites cannot have been
+    # learned yet (spec §5.3 gate), so its prior is capped strictly below the
+    # learn gate — this also makes the gate invariant exact (no Beta(2,8) tail
+    # occasionally seeding a gated skill above 0.5). Entry skills (no prereqs,
+    # e.g. counting) keep the full Beta(2,8) prior.
+    init = rng.beta(2, 8, NUM_SKILLS)
+    for k in range(NUM_SKILLS):
+        if get_prereqs(SKILL_IDS[k]):  # has at least one prerequisite
+            init[k] = min(init[k], PREREQ_LEARN_GATE - 1e-6)
     return StudentParams(
-        # low prior for most skills; counting starts a bit higher (entry skill)
-        init_ability=np.clip(rng.beta(2, 8, NUM_SKILLS), 0.0, 1.0),
+        init_ability=np.clip(init, 0.0, 1.0),
         guess=rng.beta(2, 8, NUM_SKILLS),
         slip=rng.beta(2, 8, NUM_SKILLS),
         learn_rate=rng.beta(2, 5, NUM_SKILLS),
@@ -1115,7 +1158,7 @@ def simulate_dataset(num_students: int = 10_000, max_interactions: int = 80,
 ```bash
 ./venv/bin/python3 -m pytest tests/test_simulator.py
 ```
-Expected: PASS (5 tests). If `test_prereq_learn_gate_respected` is flaky, note that `latent_ability` is recorded BEFORE the learning update so the gate invariant holds exactly; the `+0.05` tolerance only covers prior noise.
+Expected: PASS (5 tests). `test_prereq_learn_gate_respected` is now deterministic-safe: gated skills are seeded strictly below the gate (`sample_student_params`), and the test only asserts the gate while the prereq's recorded value is more than `EPS=0.05` below the gate (covering the one-step PRE→POST lookahead at the boundary). It must not be flaky across seeds; if it is, that signals a real gate-logic regression, not test noise.
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -1318,19 +1361,29 @@ from scripts.eval.knowledge_graph import NUM_SKILLS, skill_index
 
 
 def bkt_next_correct_predictions(df: pd.DataFrame, params: bkt.BKTParams = bkt.DEFAULT_PARAMS) -> np.ndarray:
-    """Return P(correct) aligned to df rows (df assumed sorted student_id, step_idx)."""
-    df = df.sort_values(["student_id", "step_idx"])
-    preds = np.empty(len(df), dtype=float)
-    row_pos = 0
-    for _, g in df.groupby("student_id", sort=False):
+    """Return P(correct) aligned to the INPUT df's positional row order.
+
+    Robust to an unsorted input: we replay BKT in chronological (student_id,
+    step_idx) order but scatter each prediction back to the row's ORIGINAL
+    position, so `preds[i]` always corresponds to `df.iloc[i]`. This is what
+    metrics.per_skill_brier (which indexes by position) relies on.
+    """
+    n = len(df)
+    preds = np.empty(n, dtype=float)
+    # original positional index of each row, in chronological order
+    order = df.sort_values(["student_id", "step_idx"]).index
+    pos_of = {label: i for i, label in enumerate(df.index)}
+    sdf = df.loc[order]
+    for _, g in sdf.groupby("student_id", sort=False):
         belief = np.full(NUM_SKILLS, params.pL0)
-        for _, row in g.iterrows():
+        for label, row in g.iterrows():
             k = skill_index(row["skill_id"])
-            preds[row_pos] = bkt.prob_correct(belief[k], params)
+            preds[pos_of[label]] = bkt.prob_correct(belief[k], params)
             belief[k] = bkt.update_belief(belief[k], bool(row["correct"]), params)
-            row_pos += 1
     return preds
 ```
+
+> Alignment is by ORIGINAL positional order: `preds[i]` corresponds to `df.iloc[i]`. This requires `df.index` to be unique (it is — `simulate_dataset`/`build_frame` produce a default RangeIndex, and `train_test_split_by_student` `.copy()`s a boolean slice that keeps unique labels). If a caller resets the index, alignment still holds because we map by label.
 
 - [ ] **Step 4: Write `metrics.py`**
 
@@ -1354,17 +1407,25 @@ def next_correct_auc(y_true, y_prob) -> float:
 
 
 def brier(y_true, y_prob) -> float:
-    return float(brier_score_loss(np.asarray(y_true), np.asarray(y_prob)))
+    # pos_label=1 is REQUIRED for sklearn >=1.3: when y_true has a single unique
+    # value, brier_score_loss raises "pos_label is not specified" without it.
+    # Our labels are always 0/1, so pinning pos_label=1 is correct and safe.
+    return float(brier_score_loss(np.asarray(y_true), np.asarray(y_prob), pos_label=1))
 
 
 def per_skill_brier(df: pd.DataFrame, preds) -> dict[str, float]:
-    """Brier score per skill over rows where that skill appears (spec §8.1 calibration)."""
+    """Brier score per skill over rows where that skill appears (spec §8.1 calibration).
+
+    `preds` must be aligned to `df.iloc` positions (bkt_next_correct_predictions
+    guarantees this). A skill seen only-correct or only-wrong has a single-class
+    subset, so pos_label=1 is required (see brier()).
+    """
     preds = np.asarray(preds)
     out: dict[str, float] = {}
     for sid, idx in df.groupby("skill_id").groups.items():
         pos = df.index.get_indexer(idx)
         yt = df.loc[idx, "correct"].to_numpy()
-        out[str(sid)] = float(brier_score_loss(yt, preds[pos])) if len(yt) else float("nan")
+        out[str(sid)] = float(brier_score_loss(yt, preds[pos], pos_label=1)) if len(yt) else float("nan")
     return out
 
 
@@ -1486,6 +1547,15 @@ def _post_test(ability, params, rng) -> float:
     return float(np.mean(scores))
 
 
+# Forgetting model: every simulated day, each skill NOT practiced that day decays
+# slightly toward its prior. Without forgetting, re-testing a mastered skill is pure
+# waste and the spaced-repetition ablation would INVERT (removing SR would free a
+# problem slot and look better). Decay gives SR a real job — counteracting forgetting
+# on already-mastered skills — so `no_spaced_repetition_score <= full_treatment_score`
+# holds for the right reason. Magnitude is plan-chosen (Open Question #7).
+FORGET_PER_DAY = 0.01  # absolute ability lost per idle day per skill
+
+
 def _run_arm(params, num_problems: int, rng, *, adaptive: bool, use_graph: bool,
              use_sm2: bool) -> float:
     ability = params.init_ability.copy()
@@ -1516,6 +1586,11 @@ def _run_arm(params, num_problems: int, rng, *, adaptive: bool, use_graph: bool,
             difficulty = 1  # control = fixed medium
 
         correct = _attempt(ability, params, k, difficulty, rng)
+
+        # forgetting: every OTHER skill loses a little ground this day.
+        for j in range(NUM_SKILLS):
+            if j != k:
+                ability[j] = float(np.clip(ability[j] - FORGET_PER_DAY, 0.0, 1.0))
 
         # update SM-2 schedule when mastered (treatment + use_sm2)
         if adaptive and use_sm2 and ability[k] > 0.85:
@@ -1574,7 +1649,9 @@ def run_ablations(num_learners: int = 1000, num_problems: int = 50, seed: int = 
 ```bash
 ./venv/bin/python3 -m pytest tests/test_metrics.py
 ```
-Expected: PASS (all metrics tests, including A/B and ablations). If `test_ab_treatment_improves` is occasionally marginal at n=300, the effect is real but noisy; do NOT weaken the assertion — instead confirm with a one-off larger run (`run_ab_experiment(num_learners=2000)`) and, if needed, raise the test's `num_learners` to 500. Document the chosen n in the commit.
+Expected: PASS (all metrics tests, including A/B and ablations). Two correctness notes:
+- **A/B direction (`treatment > control`).** If marginal at n=300, the effect is real but noisy; do NOT weaken the assertion — confirm with a one-off larger run (`run_ab_experiment(num_learners=2000)`) and, if needed, raise the test's `num_learners` to 500. Document the chosen n in the commit.
+- **SR ablation (`no_spaced_repetition_score <= full_treatment_score`).** This holds ONLY because `_run_arm` models forgetting (`FORGET_PER_DAY`): SR's job is to counteract decay on mastered skills. If you ever remove forgetting, this ablation will INVERT (a freed problem slot makes no-SR look better). Keep the forgetting term; it is load-bearing for §8.4. If the ablation is marginal, raise `num_learners` rather than weakening the inequality.
 
 - [ ] **Step 5: Commit**
 ```bash
@@ -1749,7 +1826,285 @@ git commit -m "feat(eval): evaluate.py harness (AUC, A/B, ablations, ASSISTments
 
 ---
 
-### Task 11: Schema doc + full verification
+### Task 11: Training-ready `dkt_sequences.npz` builder (the DKT plan consumes THIS)
+
+Convert the long-format trajectory frame into the padded, training-ready `.npz` the DKT pipeline loads directly. The encoding/shift/padding is locked HERE so the DKT plan never re-derives it. A hardening test parses `SKILL_IDS`/`PREREQS` out of `knowledgeGraph.js` and asserts the Python re-encoding matches (JS↔Python drift guard).
+
+**Files:**
+- Create: `scripts/eval/sequences.py`
+- Create: `scripts/build_dkt_sequences.py`
+- Test: `tests/test_sequences.py`
+
+> The `.npz` array names/shapes/dtypes are the LOCKED contract in the data-contract section above. `X` carries the one-hot of the **previous** interaction (shift), `Y_skill`/`Y_correct` carry the **current** step (the next-correct target), `mask` zeros padded steps. Padding is at the FRONT (left), truncation keeps the LAST 50 interactions. This matches the DKT plan's `make_toy_dataset` semantics exactly so real and toy data train identically.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `tests/test_sequences.py`:
+```python
+import re
+from pathlib import Path
+
+import numpy as np
+
+from scripts.eval import schema
+from scripts.eval.knowledge_graph import NUM_SKILLS, SKILL_IDS
+from scripts.eval.sequences import build_sequences, write_npz
+from scripts.eval.simulator import simulate_dataset
+
+JS_PATH = Path(__file__).resolve().parents[1] / "src" / "engine" / "knowledgeGraph.js"
+SEQ_LEN = 50
+
+
+def test_npz_arrays_have_locked_shapes_and_dtypes():
+    df = simulate_dataset(num_students=12, max_interactions=30, seed=2)
+    seqs = build_sequences(df, seq_len=SEQ_LEN)
+    n = df["student_id"].nunique()
+    assert seqs["X"].shape == (n, SEQ_LEN, 2 * NUM_SKILLS)
+    assert seqs["Y_skill"].shape == (n, SEQ_LEN, NUM_SKILLS)
+    assert seqs["Y_correct"].shape == (n, SEQ_LEN)
+    assert seqs["mask"].shape == (n, SEQ_LEN)
+    assert seqs["input_idx"].shape == (n, SEQ_LEN)
+    assert seqs["target_skill_idx"].shape == (n, SEQ_LEN)
+    assert seqs["X"].dtype == np.float32
+    assert seqs["Y_skill"].dtype == np.float32
+    assert seqs["Y_correct"].dtype == np.float32
+    assert seqs["mask"].dtype == np.float32
+    assert seqs["input_idx"].dtype == np.int16
+    assert seqs["target_skill_idx"].dtype == np.int16
+    assert list(seqs["skill_ids"]) == SKILL_IDS
+    assert int(seqs["num_skills"]) == NUM_SKILLS
+    assert int(seqs["seq_len"]) == SEQ_LEN
+
+
+def test_input_target_shift_and_onehot_convention():
+    df = simulate_dataset(num_students=20, max_interactions=40, seed=4)
+    seqs = build_sequences(df, seq_len=SEQ_LEN)
+    X, Y_skill, Y_correct, mask = seqs["X"], seqs["Y_skill"], seqs["Y_correct"], seqs["mask"]
+    for i in range(X.shape[0]):
+        real = np.where(mask[i] > 0)[0]
+        assert len(real) > 0
+        first = real[0]
+        # X at the first REAL step is all-zeros (no previous interaction in-window).
+        assert X[i, first].sum() == 0.0
+        # Y_skill is one-hot at every real step.
+        assert np.allclose(Y_skill[i, real].sum(axis=1), 1.0)
+        # For consecutive real steps, X[t] one-hot index == prev step's dkt_input_idx
+        for t in real[1:]:
+            prev_skill = int(seqs["target_skill_idx"][i, t - 1])
+            prev_correct = int(Y_correct[i, t - 1])
+            expected_idx = prev_skill * 2 + prev_correct  # LOCKED convention
+            assert X[i, t].argmax() == expected_idx
+            assert X[i, t].sum() == 1.0
+
+
+def test_front_padding_and_truncation_keep_last_50():
+    df = simulate_dataset(num_students=15, max_interactions=80, seed=6)
+    seqs = build_sequences(df, seq_len=SEQ_LEN)
+    mask = seqs["mask"]
+    # students with >=50 steps must be fully unmasked and end at t=49.
+    counts = df.groupby("student_id").size()
+    full_students = [i for i, sid in enumerate(sorted(df["student_id"].unique()))
+                     if counts[sid] >= SEQ_LEN]
+    for i in full_students:
+        assert mask[i].sum() == SEQ_LEN
+        assert mask[i, -1] == 1.0
+    # padding is at the FRONT: once a step is real, all later steps are real (no gaps).
+    for i in range(mask.shape[0]):
+        m = mask[i]
+        real = np.where(m > 0)[0]
+        if len(real):
+            assert (real == np.arange(real[0], SEQ_LEN)).all()
+
+
+def test_npz_round_trip(tmp_path):
+    df = simulate_dataset(num_students=10, max_interactions=30, seed=8)
+    seqs = build_sequences(df, seq_len=SEQ_LEN)
+    p = tmp_path / "dkt_sequences.npz"
+    write_npz(seqs, p)
+    d = np.load(p, allow_pickle=False)
+    # DKT load_dataset reads exactly these four:
+    for k in ("X", "Y_skill", "Y_correct", "mask"):
+        assert k in d.files
+        assert np.array_equal(d[k], seqs[k])
+    assert list(d["skill_ids"]) == SKILL_IDS
+    assert int(d["num_skills"]) == NUM_SKILLS
+
+
+def test_python_encoding_matches_js_source():
+    """JS↔Python drift guard: parse SKILL_IDS + PREREQS from knowledgeGraph.js."""
+    src = JS_PATH.read_text()
+    # SKILL_IDS order = Object.keys(SKILLS); parse the SKILLS object keys in order.
+    skills_block = re.search(r"export const SKILLS = \{(.*?)\n\};", src, re.S).group(1)
+    js_skill_ids = re.findall(r"^\s*'([\w-]+)':", skills_block, re.M)
+    assert js_skill_ids == SKILL_IDS, "skill order drift between JS and Python"
+    # PREREQS edges must match.
+    prereq_block = re.search(r"const PREREQS = \{(.*?)\n\};", src, re.S).group(1)
+    from scripts.eval.knowledge_graph import get_prereqs
+    for line in prereq_block.splitlines():
+        m = re.match(r"\s*'([\w-]+)':\s*\[(.*?)\],?", line)
+        if not m:
+            continue
+        key, deps = m.group(1), re.findall(r"'([\w-]+)'", m.group(2))
+        assert sorted(deps) == sorted(get_prereqs(key)), key
+```
+
+- [ ] **Step 2: Run to verify it fails**
+```bash
+./venv/bin/python3 -m pytest tests/test_sequences.py
+```
+Expected: FAIL (ModuleNotFoundError: scripts.eval.sequences).
+
+- [ ] **Step 3: Write `sequences.py`**
+
+Create `scripts/eval/sequences.py`:
+```python
+"""Long-format trajectory frame -> padded, training-ready DKT .npz.
+
+LOCKED contract (see the plan's data-contract section). The DKT pipeline's
+load_dataset() reads X, Y_skill, Y_correct, mask from this file directly; this
+module is the SINGLE place the (skill, correct) one-hot encoding + DKT input/
+target shift + front-padding is defined. The DKT plan does NOT re-derive it.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+from scripts.eval import schema
+from scripts.eval.knowledge_graph import NUM_SKILLS, SKILL_IDS
+
+DEFAULT_SEQ_LEN = schema.MAX_SEQ_LEN  # 50
+
+
+def build_sequences(df: pd.DataFrame, seq_len: int = DEFAULT_SEQ_LEN) -> dict:
+    """Group by student, sort by step, keep the LAST `seq_len`, front-pad, encode.
+
+    Returns a dict of arrays exactly matching the locked .npz contract.
+    """
+    schema.validate(df)
+    df = df.sort_values(["student_id", "step_idx"])
+    student_ids = sorted(df["student_id"].unique().tolist())
+    n = len(student_ids)
+    input_dim = 2 * NUM_SKILLS
+
+    X = np.zeros((n, seq_len, input_dim), dtype="float32")
+    Y_skill = np.zeros((n, seq_len, NUM_SKILLS), dtype="float32")
+    Y_correct = np.zeros((n, seq_len), dtype="float32")
+    mask = np.zeros((n, seq_len), dtype="float32")
+    input_idx = np.full((n, seq_len), -1, dtype="int16")
+    target_skill_idx = np.zeros((n, seq_len), dtype="int16")
+
+    groups = {sid: g for sid, g in df.groupby("student_id", sort=False)}
+    for i, sid in enumerate(student_ids):
+        g = groups[sid].sort_values("step_idx")
+        skills = g["skill_idx"].to_numpy(dtype=np.int64)
+        corrects = g["correct"].to_numpy(dtype=np.int64)
+        dkt_idx = g["dkt_input_idx"].to_numpy(dtype=np.int64)  # = skill*2 + correct
+        # keep the LAST seq_len interactions
+        if len(skills) > seq_len:
+            skills = skills[-seq_len:]
+            corrects = corrects[-seq_len:]
+            dkt_idx = dkt_idx[-seq_len:]
+        L = len(skills)
+        start = seq_len - L  # FRONT padding
+        for j in range(L):
+            t = start + j
+            # target = CURRENT interaction at j
+            target_skill_idx[i, t] = skills[j]
+            Y_skill[i, t, skills[j]] = 1.0
+            Y_correct[i, t] = float(corrects[j])
+            mask[i, t] = 1.0
+            # input = PREVIOUS interaction (DKT shift); first real step has none
+            if j > 0:
+                X[i, t, dkt_idx[j - 1]] = 1.0
+                input_idx[i, t] = np.int16(dkt_idx[j - 1])
+    return {
+        "X": X,
+        "Y_skill": Y_skill,
+        "Y_correct": Y_correct,
+        "mask": mask,
+        "input_idx": input_idx,
+        "target_skill_idx": target_skill_idx,
+        "skill_ids": np.array(SKILL_IDS, dtype="<U16"),
+        "num_skills": np.int64(NUM_SKILLS),
+        "seq_len": np.int64(seq_len),
+    }
+
+
+def write_npz(seqs: dict, path) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(path, **seqs)
+```
+
+- [ ] **Step 4: Write the CLI `build_dkt_sequences.py`**
+
+Create `scripts/build_dkt_sequences.py`:
+```python
+#!/usr/bin/env python3
+"""Build the training-ready DKT .npz from a long-format trajectory file.
+
+Examples:
+  ./venv/bin/python3 -m scripts.build_dkt_sequences \
+      --traj data/synthetic/trajectories.parquet -o data/dkt_sequences.npz
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from scripts.eval import io as traj_io
+from scripts.eval import schema
+from scripts.eval.sequences import build_sequences, write_npz
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Long-format trajectories -> DKT .npz")
+    ap.add_argument("--traj", type=str, default="data/synthetic/trajectories.parquet")
+    ap.add_argument("-o", "--out", type=str, default="data/dkt_sequences.npz")
+    ap.add_argument("--seq-len", type=int, default=schema.MAX_SEQ_LEN)
+    args = ap.parse_args()
+
+    df, meta = traj_io.read_trajectories(args.traj)
+    # echo skill ordering from the sidecar so npz and meta agree
+    if meta.get("skill_ids") and list(meta["skill_ids"]) != schema.SKILL_IDS:
+        raise SystemExit("meta skill_ids disagree with knowledge_graph.SKILL_IDS — drift!")
+    seqs = build_sequences(df, seq_len=args.seq_len)
+    write_npz(seqs, Path(args.out))
+    n = seqs["X"].shape[0]
+    print(f"Wrote {args.out}: X{seqs['X'].shape} Y_skill{seqs['Y_skill'].shape} "
+          f"for {n} students, seq_len={args.seq_len}, num_skills={int(seqs['num_skills'])}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+- [ ] **Step 5: Run to verify it passes**
+```bash
+./venv/bin/python3 -m pytest tests/test_sequences.py
+```
+Expected: PASS (5 tests), including the JS↔Python drift guard.
+
+- [ ] **Step 6: Smoke-test the CLI end to end**
+```bash
+./venv/bin/python3 -m scripts.simulate_students -n 50 -m 60 -o data/synthetic/_smoke.parquet
+./venv/bin/python3 -m scripts.build_dkt_sequences --traj data/synthetic/_smoke.parquet -o data/_smoke_seq.npz
+./venv/bin/python3 -c "import numpy as np; d=np.load('data/_smoke_seq.npz'); print({k:d[k].shape for k in ('X','Y_skill','Y_correct','mask')}, int(d['num_skills']))"
+```
+Expected: prints `{'X': (50, 50, 26), 'Y_skill': (50, 50, 13), 'Y_correct': (50, 50), 'mask': (50, 50)} 13`. Clean up the `_smoke*` files afterward.
+
+- [ ] **Step 7: Commit**
+```bash
+git add scripts/eval/sequences.py scripts/build_dkt_sequences.py tests/test_sequences.py
+git commit -m "feat(eval): training-ready dkt_sequences.npz builder + JS sync guard"
+```
+
+---
+
+### Task 12: Schema doc + full verification
 
 Write the prose schema doc the DKT plan imports, then run the whole suite.
 
@@ -1787,12 +2142,35 @@ Sorted by `(student_id, step_idx)`.
 | `latent_ability` | float32 | ground-truth P(known) BEFORE this step — diagnostics only, NOT a training feature |
 | `dkt_input_idx` | int16 | `skill_idx * 2 + correct` (one-hot index into a 26-dim DKT input) |
 
-## DKT consumption recipe
+## DKT consumption recipe (long format — informational)
 1. Load, group by `student_id`, sort by `step_idx`.
 2. Input at step t = one-hot(`dkt_input_idx[t]`) in R^26 (`2 * num_skills`).
 3. Target at step t = `correct[t+1]` for the skill at t+1 (next-correct).
 4. Pad/truncate each student to `MAX_SEQ_LEN = 50`; mask padded steps in the loss.
 5. NEVER feed `latent_ability` to the model (it is the oracle label for calibration only).
+
+## Training-ready `data/dkt_sequences.npz` (what the DKT plan actually loads)
+The long format above is the canonical interchange, but the DKT plan does NOT
+re-derive its own padding/encoding. `scripts/build_dkt_sequences.py` emits a
+padded NumPy archive with the input/target SHIFT and FRONT-padding baked in.
+`scripts/train_dkt.py:load_dataset()` reads exactly `X, Y_skill, Y_correct, mask`.
+
+| Array | Shape | Dtype | Meaning |
+|---|---|---|---|
+| `X` | `(N, 50, 26)` | float32 | one-hot of the **previous** interaction (`X[:,0]` all-zeros) |
+| `Y_skill` | `(N, 50, 13)` | float32 | one-hot of the **current** step's skill (the prediction target's skill) |
+| `Y_correct` | `(N, 50)` | float32 | current step's correctness (next-step BCE label) |
+| `mask` | `(N, 50)` | float32 | 1.0 real / 0.0 front-padding |
+| `input_idx` | `(N, 50)` | int16 | index form of `X` (`dkt_input_idx` of prev step; -1 at pad) |
+| `target_skill_idx` | `(N, 50)` | int16 | `argmax(Y_skill)` per real step |
+| `skill_ids` | `(13,)` | `<U16` | ordered skill ids (single source of ordering) |
+| `num_skills` | `()` | int64 | 13 |
+| `seq_len` | `()` | int64 | 50 |
+
+One-hot index convention (LOCKED, identical in Python encoder, JS encoder, tests):
+`dkt_input_idx = skill_idx * 2 + correct`. Padding is at the FRONT; truncation
+keeps the LAST 50 interactions. The DKT plan MAY assert `num_skills == 13` and
+`skill_ids` order against its own graph.
 
 ## Held-out split
 Split by STUDENT (not row): see `metrics.train_test_split_by_student(df, 0.2)`.
@@ -1802,11 +2180,11 @@ Split by STUDENT (not row): see `metrics.train_test_split_by_student(df, 0.2)`.
 ```bash
 ./venv/bin/python3 -m pytest
 ```
-Expected: PASS — all of `test_knowledge_graph`, `test_bkt`, `test_schema_io`, `test_decision`, `test_simulator`, `test_metrics` green, 0 failures.
+Expected: PASS — all of `test_knowledge_graph`, `test_bkt`, `test_schema_io`, `test_decision`, `test_simulator`, `test_metrics`, `test_sequences` green, 0 failures.
 
 - [ ] **Step 3: Lint-style sanity (import all modules)**
 ```bash
-./venv/bin/python3 -c "import scripts.eval.knowledge_graph, scripts.eval.bkt, scripts.eval.decision, scripts.eval.schema, scripts.eval.io, scripts.eval.simulator, scripts.eval.metrics, scripts.eval.baseline_predictor; import scripts.simulate_students, scripts.evaluate; print('all imports OK')"
+./venv/bin/python3 -c "import scripts.eval.knowledge_graph, scripts.eval.bkt, scripts.eval.decision, scripts.eval.schema, scripts.eval.io, scripts.eval.simulator, scripts.eval.sequences, scripts.eval.metrics, scripts.eval.baseline_predictor; import scripts.simulate_students, scripts.build_dkt_sequences, scripts.evaluate; print('all imports OK')"
 ```
 Expected: `all imports OK` (catches syntax/import errors the test discovery might mask).
 
@@ -1823,12 +2201,13 @@ git commit -m "docs(eval): lock trajectory schema doc for the DKT plan"
 **1. Spec coverage (Synthetic Data + Evaluation slice):**
 - §5.3 BKT simulator (latent ability; guess/slip ~Beta(2,8); learn ~Beta(2,5); prereq learn-gate >0.5; 10k×~80; policy walk; trajectory output) → Tasks 6, 7. ✅
 - §8.1 AUC on held-out 20% of synthetic students; Brier calibration; ASSISTments-2009 hook (documented, not assumed present) → Tasks 8, 10. ✅
+- Training-ready `data/dkt_sequences.npz` (padded, shifted, front-padded; `X/Y_skill/Y_correct/mask/input_idx/target_skill_idx/skill_ids/num_skills/seq_len`) emitted for the DKT plan to load directly — DKT does NOT re-derive the encoding → Task 11. ✅
 - §8.2 simulated A/B (control fixed-difficulty vs treatment adaptive: ZPD difficulty + suggestNextSkill + SM-2; post-test after 50; relative improvement) → Task 9. ✅
 - §8.4 ablations (no knowledge graph; no spaced repetition) → Task 9. ✅
-- Trajectory schema precisely defined for the DKT plan → Task 4 + Task 11 doc. ✅
+- Trajectory schema precisely defined for the DKT plan → Task 4 (long-format) + Task 11 (`.npz`) + Task 12 doc. ✅
 - §8.3 on-device latency, §5.1–5.2/5.4 DKT model/training/export → intentionally OUT of scope (other plans). ✅
 
-**2. Placeholder scan:** No "TBD"/"similar to above"/"add error handling". Every code step is complete and runnable. The one inline correction (Python `round` vs JS `Math.round` half-up) is called out explicitly with the exact fix and a test that proves it. ✅
+**2. Placeholder scan:** No "TBD"/"similar to above"/"add error handling". Every code step is complete and runnable. The SM-2 half-up rounding (`math.floor(x+0.5)`, NOT Python's banker's `round`) is implemented inline with an explaining comment and a test that proves it. ✅
 
 **3. Type/name consistency:**
 - `SKILL_IDS` order is the single source of `skill_idx`, `dkt_input_idx`, and the one-hot dim (26) — defined once in `knowledge_graph.py`, re-used everywhere. ✅
@@ -1844,12 +2223,13 @@ git commit -m "docs(eval): lock trajectory schema doc for the DKT plan"
 
 ## Open Questions
 
-1. **Graph sync (JS ↔ Python).** `knowledge_graph.py` is a manual transcription of `knowledgeGraph.js`. The sync-check test parses `PREREQS` from the JS, but `GAME_SKILLS` and `SKILLS` metadata are not mirrored (the simulator does not need them). Should we instead emit a single `knowledge_graph.json` from the JS at build time and have both runtimes read it? Recommended for v2; flagged now.
+1. **Graph sync (JS ↔ Python).** `knowledge_graph.py` is a manual transcription of `knowledgeGraph.js`. Two drift guards now exist: `test_knowledge_graph.py` parses `PREREQS`, and `test_sequences.py::test_python_encoding_matches_js_source` parses BOTH `SKILLS` (skill ORDER) and `PREREQS` from the JS and asserts the Python re-encoding matches — this is what protects the `dkt_input_idx = skill_idx*2 + correct` convention from silent JS↔Python drift. `GAME_SKILLS` is still not mirrored (the simulator does not need it). **Recommended v2:** emit a single `knowledge_graph.json` from the JS at build time (e.g. a small Node script) and have BOTH runtimes read it, retiring the regex parsers. Flagged now; the regex guards are the interim safety net.
 2. **Decision logic duplication.** We chose to reimplement `decisionLayer.js` in Python. If the engine-core decision logic changes, two files move. A shared JSON spec (constants) + thin language-specific wrappers would remove the duplication of constants at least. Decide before the DKT plan locks.
 3. **Simulator policy realism.** The `_choose_skill` ZPD-weighted policy and the `DIFFICULTY_PENALTY` magnitudes are plan-chosen, not from the spec. They affect the A/B effect size and the synthetic AUC ceiling. Should the guide (Dr. Krishnaraj) sign off on the policy, or do we calibrate it to roughly reproduce the 25–40% lift the spec cites?
 4. **ASSISTments skill mapping.** The external check runs a per-skill BKT on the dataset's OWN skills (110+ skills), not our 13-skill graph — so it validates the predictor, not the graph. Is that the intended "external sanity check," or do we want a crosswalk from ASSISTments skills to our 13? (A crosswalk is lossy and probably out of scope.)
 5. **Post-test definition.** §8.2 says "post-test score after 50 problems" but does not define the test. We use mean P(correct) at medium difficulty across all 13 skills under final latent ability. Alternative: a fresh held-out problem set per skill, scored as accuracy. Confirm the metric the report will quote.
 6. **Full-scale runtime.** The simulator is a pure-Python per-step loop (~800k steps at 10k×80). If generation is too slow for iteration, a vectorized/numba rewrite is a perf follow-up — out of scope here, where correctness is locked. Should we set a runtime budget?
+7. **Forgetting model in the A/B (`FORGET_PER_DAY`).** The A/B/ablation arms apply a fixed `0.01`/day decay to idle skills. This is REQUIRED for the spaced-repetition ablation to be sound (without forgetting, removing SR frees a problem slot and the ablation inverts), but the magnitude is plan-chosen and not in the spec. It affects both the §8.2 effect size and the §8.4 ablation gaps. Confirm with the guide whether to keep `0.01`, calibrate it to the cited 25–40% lift, or model forgetting more realistically (e.g. exponential, per-skill rate).
 
 ---
 
@@ -1857,4 +2237,4 @@ git commit -m "docs(eval): lock trajectory schema doc for the DKT plan"
 
 Plan complete and saved to `docs/superpowers/plans/2026-05-22-synthetic-data-and-evaluation.md`.
 
-This plan depends on the already-built JS engine (graph + decision constants it mirrors) and the spec. The dependent plan is **`2026-05-22-dkt-pipeline.md`**, which consumes the LOCKED trajectory schema (Task 4 / `docs/data/TRAJECTORY_SCHEMA.md`) and plugs its model predictions into `metrics.next_correct_auc`. Recommend reviewing this plan's schema before writing the DKT plan so the two stay aligned.
+This plan depends on the already-built JS engine (graph + decision constants it mirrors) and the spec. The dependent plan is **`2026-05-22-dkt-pipeline.md`**, which consumes (a) the LOCKED long-format trajectory schema (Task 4 / `docs/data/TRAJECTORY_SCHEMA.md`) and (b) the training-ready **`data/dkt_sequences.npz`** (Task 11) — its `load_dataset()` reads `X, Y_skill, Y_correct, mask` from THIS file, and may assert `num_skills == 13` / `skill_ids` order. It also plugs its model predictions into `metrics.next_correct_auc`. The DKT plan must NOT re-derive the one-hot encoding/shift — it is locked here. Confirm the DKT plan's `load_dataset` array names match Task 11's contract before it locks.
