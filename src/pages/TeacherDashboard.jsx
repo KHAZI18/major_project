@@ -234,7 +234,7 @@ export default function TeacherDashboard() {
       console.warn('class-mastery unavailable, falling back to XP status', e);
     }
     try {
-      const resp = await fetch('http://localhost:5000/api/teacher/students', {
+      const resp = await fetch(`${API_BASE}/teacher/students`, {
         cache: 'no-store',
         headers: {
           Authorization: `Bearer ${token}`,
