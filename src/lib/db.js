@@ -4,6 +4,18 @@ const DB_NAME = 'math_village_db';
 const DB_VERSION = 1;
 
 let dbPromise = null;
+const pendingSyncWrites = new Set();
+
+export function trackSyncWrite(promise) {
+  pendingSyncWrites.add(promise);
+  promise.finally(() => pendingSyncWrites.delete(promise));
+  return promise;
+}
+
+export async function flushPendingSyncWrites() {
+  if (pendingSyncWrites.size === 0) return;
+  await Promise.allSettled([...pendingSyncWrites]);
+}
 
 export function getDB() {
   if (!dbPromise) {

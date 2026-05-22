@@ -1,7 +1,7 @@
 import { useSyncStore } from '../store/useSyncStore';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { motion } from 'framer-motion';
-import { processSyncQueue } from '../lib/syncEngine';
+import { flushPendingSyncWrites } from '../lib/db';
 import { useEffect, useRef, useState } from 'react';
 
 const CFG = {
@@ -32,16 +32,10 @@ export default function SyncStatus() {
     if (status === 'synced') setDirty(false);
   }, [status]);
 
-  useEffect(() => {
-    if (navigator.onLine && queueCount > 0) {
-      const t = setTimeout(() => processSyncQueue(setStatus), 1000);
-      return () => clearTimeout(t);
-    }
-  }, [queueCount, setStatus]);
-
   const handleClick = async () => {
-    await processSyncQueue(setStatus);
-    setStatus('synced');
+    await flushPendingSyncWrites();
+    sessionStorage.setItem('mv_sync_after_reload', '1');
+    window.location.reload();
   };
 
   const key = dirty && status === 'synced' ? 'syncnow' : status;

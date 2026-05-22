@@ -2,6 +2,7 @@ import {
   getAllSyncQueueItems,
   removeSyncQueueItem,
   incrementSyncRetry,
+  flushPendingSyncWrites,
 } from './db';
 
 const MAX_RETRIES = 5;
@@ -52,6 +53,7 @@ export async function processSyncQueue(onStatusUpdate) {
   onStatusUpdate?.('syncing');
 
   try {
+    await flushPendingSyncWrites();
     const items = await getAllSyncQueueItems();
     console.log('[SyncEngine] processSyncQueue: found ' + items.length + ' items to sync');
     let successCount = 0;

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { saveProgress, loadProgress, pushToSyncQueue, saveGameSession } from '../lib/db';
+import { saveProgress, loadProgress, pushToSyncQueue, saveGameSession, trackSyncWrite } from '../lib/db';
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -202,9 +202,7 @@ export const usePlayerStore = create((set, get) => {
                           if (enriched) {
                             const toSync = { ...userData };
                             delete toSync.recentlyUnlocked;
-                            import('../lib/db').then(({ pushToSyncQueue }) => {
-                              pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload: toSync }).catch(() => {});
-                            });
+                            trackSyncWrite(pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload: toSync })).catch(() => {});
                           }
                        }
                    } else {
@@ -218,9 +216,7 @@ export const usePlayerStore = create((set, get) => {
                       if (serveData.assignedSupport && serveData.assignedSupport.gameId && !localCompleted) {
                          payload.assignedSupport = serveData.assignedSupport;
                       }
-                      import('../lib/db').then(({ pushToSyncQueue }) => {
-                         pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload }).catch(() => {});
-                      });
+                      trackSyncWrite(pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload })).catch(() => {});
                    }
                 }
              }
@@ -248,10 +244,8 @@ export const usePlayerStore = create((set, get) => {
 
       // Push the full updated state to the sync queue for the backend
       console.log('[PlayerStore] Persisting to sync queue, xp=' + state.xp + ', history=' + (state.history ? state.history.length : 0) + ' items');
-      import('../lib/db').then(({ pushToSyncQueue }) => {
-        pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload: toSave }).catch((e) => {
-          console.error('[PlayerStore] Error pushing to sync queue:', e);
-        });
+      trackSyncWrite(pushToSyncQueue({ type: 'PROGRESS_UPDATE', payload: toSave })).catch((e) => {
+        console.error('[PlayerStore] Error pushing to sync queue:', e);
       });
     },
 

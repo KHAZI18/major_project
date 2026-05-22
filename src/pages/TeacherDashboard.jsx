@@ -204,7 +204,12 @@ export default function TeacherDashboard() {
     setError(null);
     try {
       const resp = await fetch('http://localhost:5000/api/teacher/students', {
-        headers: { Authorization: `Bearer ${token}` }
+        cache: 'no-store',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        }
       });
 
       if (!resp.ok) {
@@ -258,6 +263,19 @@ export default function TeacherDashboard() {
 
   useEffect(() => {
     if (token) fetchStudents();
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchStudents();
+    };
+    const interval = window.setInterval(() => fetchStudents(), 15000);
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
   }, [token]);
 
   const assignSupport = async (studentId, gameId, topic) => {
