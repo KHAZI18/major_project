@@ -1,6 +1,7 @@
 // Public API — the only engine module the UI/backend imports (spec §3).
 import { SKILL_IDS } from './knowledgeGraph';
-import { createInitialBelief, updateBelief, getMastery as bktMastery } from './masteryModel';
+import { activeBackend, ensureBackendReady } from './masteryBackend';
+const { createInitialBelief, updateBelief, getMastery: bktMastery } = activeBackend;
 import {
   nextDifficulty,
   suggestNextSkill,
@@ -42,6 +43,7 @@ export function resetEngine() {
 
 // Hydrate the singleton from IndexedDB (call once at app start).
 export async function initEngine() {
+  await ensureBackendReady();          // BKT: no-op | DKT: loads the tfjs model
   const saved = await loadMasteryState();
   state = saved ? { ...emptyState(), ...saved } : emptyState();
   return state;

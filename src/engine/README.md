@@ -49,3 +49,25 @@ graph has 13 skills, the DKT input dimension is `2 × SKILL_IDS.length = 26`.
 
 ## Tests
 `npm test` — pure-logic + IndexedDB (fake-indexeddb) unit tests, Node environment.
+
+## DKT backend (optional swap)
+
+`masteryModel.js` ships the **BKT** backend (default). The **DKT** backend
+(`masteryModelDKT.js`) is a TF.js LSTM with the same three exports. Select it
+with the flag in `backendConfig.js` or `VITE_MASTERY_BACKEND=dkt`. Nothing else
+changes — `initEngine()` loads the model (`public/models/dkt/model.json`).
+
+DKT belief is sequence-based: it stores the last 50 interactions and re-runs
+inference on read (memoized per belief), staying immutable/serializable like BKT.
+
+### Performance verification (spec §8.3: inference < 30 ms, load < 2 s)
+Targets are for a mid-range Android device; physical-device testing is out of
+scope here. Method for the report's Results chapter:
+1. `VITE_MASTERY_BACKEND=dkt npm run build && npm run preview`, open in mobile
+   Chrome (or DevTools device emulation, Redmi-Note-class CPU throttle 4x).
+2. **Model load:** DevTools → Network, reload, read the `model.json` + `.bin`
+   transfer + parse time; or wrap `loadModel()` in `performance.now()`.
+3. **Inference:** DevTools → Performance, record while answering; or log
+   `performance.now()` around `getMastery`. Confirm < 30 ms/attempt, < 2 s load.
+4. The Node micro-benchmark (`perf-dkt.bench.test.js`) only guards against gross
+   regressions — it is NOT the device target.
