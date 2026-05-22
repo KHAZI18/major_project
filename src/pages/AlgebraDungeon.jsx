@@ -2,11 +2,16 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 
-function genQ() {
-  const x=Math.floor(Math.random()*10)+1;
-  const a=Math.floor(Math.random()*8)+1;
-  const b=Math.floor(Math.random()*20)+1;
+function genQ(grade) {
+  const xMax = grade <= 3 ? 6 : grade <= 5 ? 12 : 15;
+  const aMax = grade <= 3 ? 4 : grade <= 5 ? 10 : 15;
+  const bMax = grade <= 3 ? 10 : grade <= 5 ? 24 : 36;
+  const x=Math.floor(Math.random()*xMax)+1;
+  const a=Math.floor(Math.random()*aMax)+1;
+  const b=Math.floor(Math.random()*bMax)+1;
   // ax + b = c
   const c=a*x+b;
   return {a,b,c,x,equation:`${a}x + ${b} = ${c}`};
@@ -15,7 +20,10 @@ function genQ() {
 const DOOR_COLORS=['#818cf8','#f97316','#22c55e','#ec4899','#f59e0b'];
 
 export default function AlgebraDungeon() {
-  const [q,setQ]=useState(genQ());
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const TOTAL_DOORS = grade >= 4 ? 8 : 6;
+  const [q,setQ]=useState(genQ(grade));
   const [input,setInput]=useState('');
   const [score,setScore]=useState(0);
   const [doorsOpened,setDoorsOpened]=useState(0);
@@ -24,10 +32,9 @@ export default function AlgebraDungeon() {
   const [animDoor,setAnimDoor]=useState(false);
   const {addXP}=usePlayerStore();
   const inputRef=useRef(null);
-  const TOTAL_DOORS=6;
 
   useEffect(()=>{if(gameState==='playing')inputRef.current?.focus();},[q,gameState]);
-  useEffect(()=>{if(doorsOpened>=TOTAL_DOORS&&gameState==='playing'){setGameState('won');addXP(score,'Algebra Dungeon',score,Math.min(100,score));}},[doorsOpened]);
+  useEffect(()=>{if(doorsOpened>=TOTAL_DOORS&&gameState==='playing'){setGameState('won');addXP(score,'Algebra Dungeon',score,Math.min(100,score),'Algebra');}},[doorsOpened]);
 
   const handleSubmit=(e)=>{
     e.preventDefault();
@@ -35,7 +42,7 @@ export default function AlgebraDungeon() {
     const val=parseInt(input,10);
     if(val===q.x){
       setAnimDoor(true);
-      setTimeout(()=>{setAnimDoor(false);setDoorsOpened(d=>d+1);setScore(s=>s+25);setQ(genQ());setFeedback(null);},800);
+      setTimeout(()=>{setAnimDoor(false);setDoorsOpened(d=>d+1);setScore(s=>s+25);setQ(genQ(grade));setFeedback(null);},800);
       setFeedback({text:`🗝️ Door opened! x=${q.x}`,correct:true});
     }else{
       setFeedback({text:`❌ x = ${q.x}. Solve: ${q.equation}`,correct:false});
@@ -50,7 +57,7 @@ export default function AlgebraDungeon() {
       <div className="w-full max-w-md mb-4 flex items-center justify-between">
         <Link to="/student" className="btn btn-glass btn-sm">← Back</Link>
         <h1 className="font-display text-xl font-bold text-gradient">🗝️ Algebra Dungeon</h1>
-        <div className="badge badge-primary text-xs">Grade 6</div>
+        <div className="badge badge-primary text-xs">Grade {grade}</div>
       </div>
       <div className="w-full max-w-md glass-panel p-3 mb-4 flex items-center justify-between">
         <div className="hud-chip text-yellow-400">Score: {score}</div>
@@ -108,7 +115,7 @@ export default function AlgebraDungeon() {
           <h2 className="font-display text-3xl font-bold mb-3">Dungeon Cleared!</h2>
           <p className="text-slate-300 mb-6">Score: <strong className="text-primary">{score}</strong></p>
           <div className="flex gap-3">
-            <button onClick={()=>{setScore(0);setDoorsOpened(0);setGameState('playing');setQ(genQ());setInput('');}} className="btn btn-primary flex-1">🔄 New Dungeon</button>
+            <button onClick={()=>{setScore(0);setDoorsOpened(0);setGameState('playing');setQ(genQ(grade));setInput('');}} className="btn btn-primary flex-1">🔄 New Dungeon</button>
             <Link to="/student" className="btn btn-glass flex-1 no-underline">🏘️ Village</Link>
           </div>
         </motion.div>

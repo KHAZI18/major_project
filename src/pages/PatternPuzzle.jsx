@@ -1,269 +1,453 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { ArrowLeft, CheckCircle2, Grid3X3, RotateCcw, ShieldAlert, Sparkles, TimerReset } from 'lucide-react';
 import { useGamification } from '../hooks/useGamification';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 import { getNextDifficulty, recordAttempt } from '../engine/engineAPI';
 import { skillForGame } from '../engine/gameSkills';
-import { ChevronLeft, Puzzle, Award, RefreshCcw, Check, X, Sparkles, BrainCircuit, Grid3X3 } from 'lucide-react';
 
 const SKILL = skillForGame('PatternPuzzle'); // 'patterns'
-const DIFFICULTY_START = { easy: 1, medium: 3, hard: 5 }; // engine string -> starting matrix difficulty
-function startLevelFromEngine() {
-  return DIFFICULTY_START[getNextDifficulty(SKILL)] ?? 1;
+const DIFFICULTY_START = { easy: 0, medium: 1, hard: 2 }; // engine string -> starting rule offset
+// Seed the first puzzle's rule selection from the adaptive learning engine. This
+// only nudges which rule appears first; it does not change the round counter or UI.
+function startSeedFromEngine() {
+  return DIFFICULTY_START[getNextDifficulty(SKILL)] ?? 0;
 }
 
-// Generates a 3x3 Logic Matrix where the 9th cell (index 8) is the missing '?'
-function generateMatrixPattern(difficultyLevel) {
-  const patternTypes = ['add_rows', 'mult_rows', 'seq_grid', 'add_cols', 'sub_rows'];
-  const maxIdx = Math.min(patternTypes.length, 1 + Math.floor(difficultyLevel / 2));
-  const type = patternTypes[Math.floor(Math.random() * maxIdx)];
-  
-  let grid = Array(9).fill(0);
-  let answer;
-  let rule = '';
-  
-  if (type === 'add_rows') {
-     // Row 3 = Row 1 + Row 2
-     for(let r=0; r<3; r++) {
-         const a = Math.floor(Math.random() * 15) + 1;
-         const b = Math.floor(Math.random() * 15) + 1;
-         grid[r*3] = a;
-         grid[r*3 + 1] = b;
-         grid[r*3 + 2] = a + b;
-     }
-     answer = grid[8];
-     grid[8] = null;
-     rule = "Column 3 is the Sum of Column 1 and Column 2";
-     
-  } else if (type === 'sub_rows') {
-     for(let r=0; r<3; r++) {
-         const a = Math.floor(Math.random() * 20) + 10;
-         const b = Math.floor(Math.random() * 9) + 1;
-         grid[r*3] = a;
-         grid[r*3 + 1] = b;
-         grid[r*3 + 2] = a - b;
-     }
-     answer = grid[8];
-     grid[8] = null;
-     rule = "Column 3 is Column 1 minus Column 2";
-     
-  } else if (type === 'mult_rows') {
-     for(let r=0; r<3; r++) {
-         const a = Math.floor(Math.random() * 9) + 1;
-         const b = Math.floor(Math.random() * 9) + 1;
-         grid[r*3] = a;
-         grid[r*3 + 1] = b;
-         grid[r*3 + 2] = a * b;
-     }
-     answer = grid[8];
-     grid[8] = null;
-     rule = "Column 3 is the Product of Column 1 and Column 2";
-     
-  } else if (type === 'seq_grid') {
-     const start = Math.floor(Math.random() * 15) + 1;
-     const step = Math.floor(Math.random() * 5) + 1;
-     for(let i=0; i<9; i++) {
-        grid[i] = start + (step * i);
-     }
-     answer = grid[8];
-     grid[8] = null;
-     rule = `Grid increases sequentially by ${step}`;
-     
-  } else if (type === 'add_cols') {
-     // Col 3 = Col 1 + Col 2 (Vertical Logic)
-     for(let c=0; c<3; c++) {
-         const a = Math.floor(Math.random() * 10) + 1;
-         const b = Math.floor(Math.random() * 10) + 1;
-         grid[c] = a;
-         grid[c + 3] = b;
-         grid[c + 6] = a + b;
-     }
-     answer = grid[8];
-     grid[8] = null;
-     rule = "Row 3 is the Sum of Row 1 and Row 2";
-  }
+const RULES = [
+  {
+    id: 'sum',
+    title: 'Row Sum Rule',
+    clue: 'The missing cell is the sum of the two numbers in its row.',
+    build: () => {
+      const a = randomInt(2, 7);
+      const b = randomInt(2, 7);
+      return {
+        matrix: [
+          [a, b, a + b],
+          [randomInt(3, 8), randomInt(2, 6), randomInt(4, 10)],
+          [randomInt(4, 9), randomInt(3, 7), null],
+        ],
+        answer: null,
+        hidden: [2, 2],
+        solution: null,
+      };
+    },
+    solve: (matrix) => matrix[2][0] + matrix[2][1],
+  },
+  {
+    id: 'diff',
+    title: 'Difference Matrix',
+    clue: 'Each row follows subtraction: left minus middle equals right.',
+    build: () => {
+      const left = randomInt(10, 18);
+      const mid = randomInt(2, 8);
+      return {
+        matrix: [
+          [left, mid, left - mid],
+          [randomInt(11, 20), randomInt(2, 9), null],
+          [randomInt(12, 22), randomInt(3, 10), randomInt(4, 15)],
+        ],
+        answer: null,
+        hidden: [1, 2],
+        solution: null,
+      };
+    },
+    solve: (matrix) => matrix[1][0] - matrix[1][1],
+  },
+  {
+    id: 'product',
+    title: 'Product Column',
+    clue: 'The missing value is the product of the other two numbers in its column.',
+    build: () => {
+      const top = randomInt(2, 6);
+      const mid = randomInt(2, 5);
+      return {
+        matrix: [
+          [top, randomInt(2, 7), randomInt(2, 6)],
+          [mid, randomInt(2, 8), randomInt(3, 9)],
+          [top * mid, randomInt(3, 9), null],
+        ],
+        answer: null,
+        hidden: [2, 2],
+        solution: null,
+      };
+    },
+    solve: (matrix) => matrix[0][0] * matrix[1][0],
+  },
+  {
+    id: 'sequence',
+    title: 'Arithmetic Path',
+    clue: 'The grid increases by a constant step from left to right and top to bottom.',
+    build: () => {
+      const start = randomInt(1, 8);
+      const step = randomInt(2, 5);
+      const matrix = [];
+      for (let r = 0; r < 3; r += 1) {
+        const row = [];
+        for (let c = 0; c < 3; c += 1) {
+          row.push(start + (r * 3 + c) * step);
+        }
+        matrix.push(row);
+      }
+      matrix[1][1] = null;
+      return {
+        matrix,
+        answer: null,
+        hidden: [1, 1],
+        solution: null,
+      };
+    },
+    solve: (matrix) => {
+      const left = matrix[1][0];
+      const right = matrix[1][2];
+      return Math.round((left + right) / 2);
+    },
+  },
+];
 
-  // Generate unique wrong options
-  const optSet = new Set([answer]);
-  while (optSet.size < 4) {
-      let offset = Math.floor(Math.random() * 20) - 10;
-      if (offset === 0) offset = 1;
-      let fake = answer + offset;
-      if (fake > 0 && fake !== answer && fake < 150) optSet.add(fake);
-  }
-
-  return { grid, answer, rule, options: Array.from(optSet).sort(() => Math.random() - 0.5) };
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function PatternPuzzle() {
+function clampRuleSet(grade) {
+  if (grade <= 2) return RULES.slice(0, 2);
+  if (grade === 3) return RULES.slice(0, 3);
+  return RULES;
+}
+
+function generatePuzzle(grade, roundIndex) {
+  const pool = clampRuleSet(grade);
+  const rule = pool[roundIndex % pool.length];
+  const base = rule.build();
+  const solution = rule.solve(base.matrix);
+  const options = new Set([solution]);
+
+  while (options.size < 4) {
+    const delta = randomInt(-8, 8) || 1;
+    const candidate = Math.max(1, solution + delta);
+    options.add(candidate);
+  }
+
+  return {
+    id: `${rule.id}-${roundIndex}-${Date.now()}`,
+    rule,
+    matrix: base.matrix,
+    solution,
+    options: [...options].sort(() => Math.random() - 0.5),
+  };
+}
+
+function MatrixBoard({ matrix, selected, locked, onCellSelect }) {
+  return (
+    <div className="grid gap-2 rounded-xl border border-slate-200 bg-white p-4 shadow-sm sm:gap-3">
+      {matrix.map((row, r) => (
+        <div key={r} className="grid grid-cols-3 gap-2 sm:gap-3">
+          {row.map((cell, c) => {
+            const isSelected = selected?.r === r && selected?.c === c;
+            const isHidden = cell === null;
+            return (
+              <button
+                key={`${r}-${c}`}
+                type="button"
+                disabled={locked || !isHidden}
+                onClick={() => onCellSelect(r, c)}
+                className={`aspect-square rounded-xl border text-lg font-black transition-all sm:text-2xl ${
+                  isHidden
+                    ? isSelected
+                      ? 'border-cyan-400 bg-cyan-50 text-cyan-900 ring-4 ring-cyan-200'
+                      : 'border-dashed border-slate-300 bg-slate-50 text-slate-400 hover:border-cyan-300 hover:bg-cyan-50'
+                    : 'cursor-default border-slate-200 bg-slate-100 text-slate-900'
+                }`}
+              >
+                {isHidden ? (isSelected ? '?' : 'Select') : cell}
+              </button>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function OptionPill({ value, active, disabled, onClick }) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onClick(value)}
+      className={`rounded-xl border px-4 py-3 text-lg font-black transition-all disabled:cursor-not-allowed ${
+        active
+          ? 'border-cyan-400 bg-cyan-50 text-cyan-900 shadow-sm'
+          : 'border-slate-200 bg-white text-slate-800 hover:border-cyan-300 hover:bg-cyan-50'
+      }`}
+    >
+      {value}
+    </button>
+  );
+}
+
+export default function PatternPuzzle() {
   const { addXP } = useGamification();
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
   const navigate = useNavigate();
 
-  const TOTAL_ROUNDS = 10;
-  const [levelTracker, setLevelTracker] = useState(() => startLevelFromEngine());
+  const totalRounds = grade <= 2 ? 5 : grade === 3 ? 6 : grade === 4 ? 7 : 8;
+  const [roundIndex, setRoundIndex] = useState(0);
+  const [puzzle, setPuzzle] = useState(() => generatePuzzle(grade, startSeedFromEngine()));
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [selectedOption, setSelectedOption] = useState(null);
   const [score, setScore] = useState(0);
   const [streak, setStreak] = useState(0);
-  const [currentPattern, setCurrentPattern] = useState(() => generateMatrixPattern(startLevelFromEngine()));
-  const [feedback, setFeedback] = useState(null);
-  const [gameOver, setGameOver] = useState(false);
+  const [bestStreak, setBestStreak] = useState(0);
+  const [timer, setTimer] = useState(18);
+  const [mistakes, setMistakes] = useState(0);
+  const [status, setStatus] = useState('ready');
+  const [feedback, setFeedback] = useState('Choose the missing cell, inspect the clue, then pick the correct value.');
 
-  const initGame = () => {
-    const start = startLevelFromEngine();
-    setLevelTracker(start);
+  const locked = status !== 'playing';
+  const restart = () => {
+    setRoundIndex(0);
+    setPuzzle(generatePuzzle(grade, startSeedFromEngine()));
+    setSelectedCell(null);
+    setSelectedOption(null);
     setScore(0);
     setStreak(0);
-    setGameOver(false);
-    setCurrentPattern(generateMatrixPattern(start));
-    setFeedback(null);
+    setBestStreak(0);
+    setTimer(18);
+    setMistakes(0);
+    setStatus('ready');
+    setFeedback('Choose the missing cell, inspect the clue, then pick the correct value.');
   };
 
-  const handleSelect = (opt) => {
-    if (feedback) return;
-    const correct = opt === currentPattern.answer;
+  const startGame = () => {
+    setStatus('playing');
+    setFeedback('Matrix online. Read the rule and solve the hidden cell.');
+  };
+
+  useEffect(() => {
+    if (status !== 'playing') return undefined;
+    const tick = setInterval(() => {
+      setTimer((current) => {
+        if (current <= 1) {
+          setMistakes((value) => {
+            const next = value + 1;
+            if (next >= 3) {
+              setStatus('ended');
+              return next;
+            }
+            setFeedback('Time expired. A new matrix has been deployed.');
+            setPuzzle(generatePuzzle(grade, roundIndex));
+            setSelectedCell(null);
+            setSelectedOption(null);
+            setRoundIndex((index) => index + 1);
+            return next;
+          });
+          return 18;
+        }
+        return current - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(tick);
+  }, [grade, roundIndex, status]);
+
+  useEffect(() => {
+    if (status !== 'ended') return;
+    const accuracy = Math.max(0, Math.round((score / Math.max(1, score + mistakes)) * 100));
+    addXP(Math.max(60, score * 30 + bestStreak * 12 + accuracy), 'Grid Matrix Puzzle', score, accuracy, 'Patterns');
+  }, [addXP, bestStreak, mistakes, score, status]);
+
+  const submitAnswer = (value) => {
+    if (locked || !selectedCell) return;
+    setSelectedOption(value);
+
+    const correct = value === puzzle.solution;
     recordAttempt({ skillId: SKILL, correct, responseTime: 0 });
 
     if (correct) {
-      setFeedback('correct');
-      setScore(s => s + 1);
-      setStreak(s => s + 1);
-    } else {
-      setFeedback('wrong');
-      setStreak(0);
+      const nextScore = score + 1;
+      const nextStreak = streak + 1;
+      setScore(nextScore);
+      setStreak(nextStreak);
+      setBestStreak((best) => Math.max(best, nextStreak));
+      setFeedback(`Correct. ${puzzle.rule.title} solved.`);
+
+      if (roundIndex + 1 >= totalRounds) {
+        setStatus('ended');
+        return;
+      }
+
+      setTimeout(() => {
+        setRoundIndex((index) => index + 1);
+        setPuzzle(generatePuzzle(grade, roundIndex + 1));
+        setSelectedCell(null);
+        setSelectedOption(null);
+        setTimer(18);
+        setFeedback('Next matrix loaded. Solve again.');
+      }, 900);
+      return;
     }
 
-    setTimeout(() => {
-      setFeedback(null);
-      if (levelTracker < TOTAL_ROUNDS) {
-        setLevelTracker(l => l + 1);
-        setCurrentPattern(generateMatrixPattern(levelTracker + 1));
-      } else {
-        setGameOver(true);
-        addXP(score * 30 + (opt === currentPattern.answer ? 20 : 0), 'Grid Matrix Puzzle', score + (opt === currentPattern.answer ? 1 : 0));
+    setMistakes((current) => {
+      const next = current + 1;
+      if (next >= 3) {
+        setStatus('ended');
       }
-    }, 2000); // 2 seconds to read the matrix logic breakdown
+      return next;
+    });
+    setStreak(0);
+    setFeedback(`Not quite. ${puzzle.rule.clue}`);
   };
 
+  const onCellSelect = (r, c) => {
+    if (locked) return;
+    setSelectedCell({ r, c });
+    setSelectedOption(null);
+    setFeedback('Cell selected. Use the clue to decide the missing value.');
+  };
+
+  const accuracy = Math.max(0, Math.round((score / Math.max(1, score + mistakes)) * 100));
+
   return (
-    <div className="animate-fade-in-up pb-10">
-      <header className="flex justify-between items-center mb-6 sm:mb-10 px-2 sm:px-0">
-        <Link to="/student" className="btn btn-glass px-3 py-2 sm:px-4 text-sm sm:text-base">
-          <ChevronLeft size={18} className="sm:w-5 sm:h-5" /> <span className="hidden sm:inline">Back</span>
-        </Link>
-        <h2 className="text-xl sm:text-2xl font-bold flex items-center gap-2 tracking-tight">
-          <Grid3X3 className="text-secondary w-5 h-5 sm:w-6 sm:h-6"/> Matrix Puzzle
-        </h2>
-        <div className="px-3 sm:px-5 py-1.5 sm:py-2 bg-secondary/20 text-secondary border border-secondary/30 rounded-full font-bold shadow-[0_0_15px_rgba(168,85,247,0.3)] text-sm sm:text-base">
-          Matrix {Math.min(levelTracker, TOTAL_ROUNDS)}/{TOTAL_ROUNDS}
-        </div>
-      </header>
-
-      <div className="glass-panel p-4 sm:p-8 text-center max-w-2xl mx-auto relative overflow-hidden border-secondary/20 shadow-[0_0_40px_rgba(168,85,247,0.1)]">
-        
-        {/* Streak Visualizer */}
-        {streak >= 3 && !gameOver && (
-            <div className="absolute top-4 right-4 flex items-center gap-1 text-secondary animate-combo-pop font-bold text-lg sm:text-xl px-3 py-1 bg-secondary/10 rounded-full border border-secondary/20 shadow-secondary-glow">
-               <Sparkles className="animate-pulse w-4 h-4 sm:w-5 sm:h-5"/> {streak}x STREAK
+    <div className="min-h-[calc(100vh-4rem)] bg-[#f4f7fb] px-3 py-4 text-slate-900 sm:px-5 lg:px-8">
+      <div className="mx-auto max-w-6xl">
+        <header className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex items-center gap-3">
+            <Link to="/student" className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:text-slate-950" aria-label="Back to dashboard">
+              <ArrowLeft size={19} />
+            </Link>
+            <div>
+              <div className="flex items-center gap-2">
+                <Grid3X3 size={24} className="text-violet-700" />
+                <h1 className="font-display text-2xl font-black leading-none text-slate-950">Matrix Puzzle Lab</h1>
+              </div>
+              <p className="mt-1 text-sm font-semibold text-slate-500">Find the missing cell by reading the matrix rule.</p>
             </div>
-        )}
+          </div>
 
-        {gameOver ? (
-           <div className="animate-fade-in-up py-8">
-             <div className="relative w-32 h-32 mx-auto mb-6">
-                <div className="absolute inset-0 bg-secondary/20 blur-2xl rounded-full scale-150 animate-pulse"></div>
-                <BrainCircuit size={128} className="text-secondary relative z-10" />
-             </div>
-             <h3 className="text-3xl sm:text-4xl font-bold mb-4">Matrix Master!</h3>
-             <p className="text-slate-300 text-lg sm:text-xl mb-2">You decrypted <strong className="text-white">{score}</strong> spatial logic matrices.</p>
-             <p className="text-success text-xl sm:text-2xl font-bold mb-10 shadow-success-glow">+{score * 30} XP Earned!</p>
-             <div className="flex justify-center flex-wrap gap-4">
-               <button className="btn btn-primary bg-secondary hover:bg-secondary-focus px-6 sm:min-w-[150px] py-3 text-sm sm:text-lg" onClick={initGame}>
-                 <RefreshCcw size={18} className="mr-2 inline"/> Recalculate
-               </button>
-               <button className="btn btn-outline px-6 sm:min-w-[150px] py-3 text-sm sm:text-lg" onClick={() => navigate('/student')}>Dashboard</button>
-             </div>
-           </div>
+          <div className="grid grid-cols-4 gap-2">
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Score</p><p className="text-base font-black tabular-nums">{score}</p></div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Round</p><p className="text-base font-black tabular-nums">{Math.min(roundIndex + 1, totalRounds)}/{totalRounds}</p></div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Timer</p><p className="text-base font-black tabular-nums text-cyan-700">{timer}s</p></div>
+            <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 shadow-sm"><p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Mistakes</p><p className="text-base font-black tabular-nums text-rose-700">{mistakes}/3</p></div>
+          </div>
+        </header>
+
+        {status === 'ended' ? (
+          <section className="grid min-h-[620px] place-items-center rounded-xl border border-slate-200 bg-white p-6 text-center shadow-sm">
+            <div className="max-w-lg">
+              <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-2xl bg-violet-50 text-violet-700">
+                {mistakes >= 3 ? <ShieldAlert size={34} /> : <CheckCircle2 size={34} />}
+              </div>
+              <h2 className="font-display text-4xl font-black text-slate-950">{mistakes >= 3 ? 'Matrix Overload' : 'Matrix Solved'}</h2>
+              <p className="mt-3 text-sm font-semibold leading-relaxed text-slate-600">
+                You solved {score} matrices, held a best streak of {bestStreak}, and finished with {accuracy}% accuracy.
+              </p>
+              <div className="mt-6 grid grid-cols-3 gap-2">
+                <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase text-slate-400">Score</p><p className="text-xl font-black">{score}</p></div>
+                <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase text-slate-400">Best streak</p><p className="text-xl font-black">{bestStreak}</p></div>
+                <div className="rounded-lg bg-slate-50 p-3"><p className="text-[10px] font-bold uppercase text-slate-400">Accuracy</p><p className="text-xl font-black">{accuracy}%</p></div>
+              </div>
+              <div className="mt-7 flex flex-col justify-center gap-3 sm:flex-row">
+                <button onClick={restart} className="inline-flex items-center justify-center gap-2 rounded-lg bg-violet-700 px-5 py-3 text-sm font-bold text-white shadow-sm transition-colors hover:bg-violet-800">
+                  <RotateCcw size={17} /> Play Again
+                </button>
+                <button onClick={() => navigate('/student')} className="inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white px-5 py-3 text-sm font-bold text-slate-700 shadow-sm transition-colors hover:bg-slate-50">
+                  Dashboard
+                </button>
+              </div>
+            </div>
+          </section>
         ) : (
-          <div>
-            <p className="text-base sm:text-lg text-slate-300 mb-8 sm:mb-12 px-2 font-medium">
-               Analyze the rows and columns to logically deduce the missing matrix cell.
-            </p>
-
-            {/* 3x3 Matrix Grid */}
-            <div className="flex justify-center mb-10 sm:mb-14">
-                <div className="grid grid-cols-3 gap-2 sm:gap-4 bg-slate-900/60 p-4 sm:p-6 rounded-2xl sm:rounded-3xl border border-white/10 shadow-[inset_0_4px_20px_rgba(0,0,0,0.5)]">
-                    {currentPattern.grid.map((num, i) => {
-                       const isQuestion = num === null;
-                       const showCorrect = isQuestion && feedback === 'correct';
-                       const showWrong = isQuestion && feedback === 'wrong';
-                       
-                       let tileClass = "w-16 h-16 sm:w-24 sm:h-24 rounded-xl flex items-center justify-center text-2xl sm:text-4xl font-bold transition-all duration-500 shadow-lg ";
-                       
-                       if (isQuestion) {
-                          if (showCorrect) {
-                             tileClass += "bg-success/20 border-2 border-success text-success shadow-[0_0_20px_rgba(34,197,94,0.4)] scale-110";
-                          } else if (showWrong) {
-                             tileClass += "bg-danger/20 border-2 border-danger text-danger scale-95";
-                          } else {
-                             tileClass += "bg-secondary/10 border-2 border-dashed border-secondary/50 text-secondary animate-pulse";
-                          }
-                       } else {
-                          tileClass += "bg-slate-800 border-2 border-white/5 text-white shadow-[inset_0_2px_10px_rgba(255,255,255,0.05)]";
-                       }
-
-                       return (
-                          <div key={i} className={tileClass}>
-                             {isQuestion ? (feedback === 'correct' ? currentPattern.answer : '?') : num}
-                          </div>
-                       )
-                    })}
+          <div className="grid gap-4 lg:grid-cols-[1fr_330px]">
+            <section className="relative space-y-4">
+              <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Rule deck</p>
+                    <h2 className="font-display text-2xl font-black text-slate-950">{puzzle.rule.title}</h2>
+                  </div>
+                  <div className="rounded-lg bg-violet-50 px-3 py-2 text-right">
+                    <p className="text-[10px] font-bold uppercase tracking-wide text-violet-600">Difficulty</p>
+                    <p className="text-sm font-black text-violet-900">Grade {grade}</p>
+                  </div>
                 </div>
-            </div>
+                <p className="text-sm font-semibold leading-relaxed text-slate-600">{puzzle.rule.clue}</p>
+              </div>
 
-            {/* Input Selection Options */}
-            <div className="grid grid-cols-2 gap-3 sm:gap-4 max-w-md mx-auto px-4">
-              {currentPattern.options.map((opt, i) => {
-                 let btnClass = "relative overflow-hidden bg-slate-800 border-2 border-slate-700 rounded-xl p-4 sm:p-5 text-xl sm:text-2xl font-bold transition-all duration-300";
-                 let interactionClass = "hover:border-secondary hover:bg-slate-700 hover:shadow-[0_0_15px_rgba(168,85,247,0.4)] active:scale-95";
+              <MatrixBoard
+                matrix={puzzle.matrix}
+                selected={selectedCell}
+                locked={locked}
+                onCellSelect={onCellSelect}
+              />
 
-                 if (feedback) {
-                    interactionClass = "";
-                    if (opt === currentPattern.answer) {
-                        btnClass += " bg-success/20 border-success text-success shadow-success-glow scale-105";
-                    } else {
-                        btnClass += " opacity-30 border-slate-800 pointer-events-none";
-                    }
-                 }
-
-                 return (
-                   <button 
-                      key={i} 
-                      onClick={() => handleSelect(opt)} 
-                      disabled={feedback !== null} 
-                      className={`${btnClass} ${interactionClass}`}
-                   >
-                     {opt}
-                   </button>
-                 );
-              })}
-            </div>
-
-            {/* Explanation Feedback Console */}
-            <div className="h-16 mt-8 sm:mt-10 text-xs sm:text-base font-medium opacity-100 px-2 flex items-center justify-center">
-              {feedback === 'correct' && (
-                  <div className="inline-flex items-center gap-2 bg-success/20 border border-success/50 px-4 sm:px-6 py-2 sm:py-3 rounded-full text-success animate-fade-in-up font-bold tracking-wide w-full max-w-md justify-center shadow-[0_0_20px_rgba(34,197,94,0.3)]">
-                      <Check className="w-5 h-5 flex-shrink-0"/> <span className="truncate">{currentPattern.rule}</span>
+              {status === 'ready' && (
+                <div className="absolute inset-0 grid place-items-center rounded-xl bg-white/80 p-6 text-center backdrop-blur-sm">
+                  <div className="max-w-md rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+                    <Grid3X3 size={46} className="mx-auto mb-4 text-violet-700" />
+                    <h2 className="font-display text-3xl font-black text-slate-950">Matrix Puzzle Lab</h2>
+                    <p className="mt-3 text-sm font-semibold leading-relaxed text-slate-600">
+                      Inspect the matrix, select the missing cell, then choose the value that satisfies the rule.
+                    </p>
+                    <button onClick={startGame} className="mt-6 rounded-lg bg-violet-700 px-5 py-3 text-sm font-bold text-white shadow-sm transition-colors hover:bg-violet-800">
+                      Start Lab
+                    </button>
                   </div>
+                </div>
               )}
-              {feedback === 'wrong' && (
-                  <div className="inline-flex items-center gap-2 bg-danger/20 border border-danger/50 px-4 sm:px-6 py-2 sm:py-3 rounded-full text-danger animate-fade-in-up font-bold tracking-wide w-full max-w-md justify-center">
-                      <X className="w-5 h-5 flex-shrink-0"/> <span className="truncate">Matrix logic: {currentPattern.rule}</span>
+            </section>
+
+            <aside className="space-y-4">
+              <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center gap-2">
+                  <TimerReset size={17} className="text-cyan-700" />
+                  <h3 className="text-sm font-black uppercase tracking-wide text-slate-800">Answer bank</h3>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {puzzle.options.map((option) => (
+                    <OptionPill
+                      key={option}
+                      value={option}
+                      active={selectedOption === option}
+                      disabled={locked || !selectedCell}
+                      onClick={submitAnswer}
+                    />
+                  ))}
+                </div>
+              </section>
+
+              <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="mb-3 flex items-center gap-2">
+                  <Sparkles size={17} className="text-violet-700" />
+                  <h3 className="text-sm font-black uppercase tracking-wide text-slate-800">Feedback</h3>
+                </div>
+                <p className="min-h-[64px] rounded-lg bg-slate-50 px-3 py-3 text-sm font-semibold leading-relaxed text-slate-700">{feedback}</p>
+              </section>
+
+              <section className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 size={17} className="text-emerald-600" />
+                    <h3 className="text-sm font-black uppercase tracking-wide text-slate-800">Pattern status</h3>
                   </div>
-              )}
-            </div>
+                  <div className="rounded-lg bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700">{streak} streak</div>
+                </div>
+                <div className="mt-3 space-y-2 text-sm font-semibold text-slate-600">
+                  <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>Selected cell</span><span>{selectedCell ? `${selectedCell.r + 1}, ${selectedCell.c + 1}` : 'None'}</span></div>
+                  <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2"><span>Round accuracy</span><span>{accuracy}%</span></div>
+                </div>
+                <button onClick={restart} className="mt-4 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm font-bold text-slate-700 shadow-sm transition-colors hover:bg-slate-50">
+                  <RotateCcw size={16} /> Reset Lab
+                </button>
+              </section>
+            </aside>
           </div>
         )}
       </div>
     </div>
   );
 }
-
-export default PatternPuzzle;

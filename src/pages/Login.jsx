@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/useAuthStore';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { GoogleLogin } from '@react-oauth/google';
 
 const AVATARS = ['🧒','👧','👦','🧑','👩','👨','🧒🏽','👧🏽'];
 const GRADES  = [2, 3, 4, 5, 6];
@@ -22,12 +23,22 @@ export default function Login() {
   const [error, setError] = useState('');
   const [shake, setShake] = useState(false);
   const navigate  = useNavigate();
-  const { login, signup } = useAuthStore();
+  const { login, signup, googleAuth } = useAuthStore();
   const { checkStreak } = usePlayerStore();
 
   const triggerError = (msg) => {
     setError(msg); setShake(true);
     setTimeout(() => setShake(false), 600);
+  };
+
+  const handleGoogleSuccess = async (credentialResponse) => {
+    const result = await googleAuth(role, credentialResponse.credential);
+    if (result.success) {
+      checkStreak();
+      navigate(`/${role}`);
+    } else {
+      triggerError(result.error);
+    }
   };
 
   const handleSubmit = async (e) => {
@@ -284,6 +295,21 @@ export default function Login() {
                       }}>
                       {tab === 'login' ? 'Enter Village' : 'Begin Journey'}
                     </motion.button>
+
+                    <div className="relative flex items-center justify-center my-6">
+                      <div className="border-t border-slate-200 w-full"></div>
+                      <span className="bg-white px-3 text-xs font-bold text-slate-400 absolute uppercase tracking-wide">Or</span>
+                    </div>
+                    
+                    <div className="flex justify-center w-full">
+                      <GoogleLogin
+                        onSuccess={handleGoogleSuccess}
+                        onError={() => triggerError('Google authentication failed')}
+                        theme="outline"
+                        size="large"
+                        width="100%"
+                      />
+                    </div>
                   </motion.form>
                 </div>
               </div>

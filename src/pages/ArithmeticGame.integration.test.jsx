@@ -12,6 +12,11 @@ vi.mock('../engine/engineAPI', () => ({
   recordAttempt: (...a) => recordAttempt(...a),
 }));
 
+// The redesigned game gates on an authenticated student — provide one.
+vi.mock('../store/useAuthStore', () => ({
+  useAuthStore: () => ({ user: { name: 'Test Student', grade: 3 } }),
+}));
+
 import ArithmeticGame from './ArithmeticGame';
 
 function renderGame() {
@@ -29,26 +34,22 @@ describe('ArithmeticGame engine integration', () => {
     getNextDifficulty.mockReturnValue('hard');
   });
 
-  it('asks the engine for difficulty for the addition skill', () => {
+  it('seeds difficulty from the engine for the addition skill', () => {
+    // The engine drives the (now-internal) difficulty; the UI no longer shows a
+    // selector, so we just verify the engine is consulted for the right skill.
     renderGame();
     expect(getNextDifficulty).toHaveBeenCalledWith('addition');
-  });
-
-  it('seeds the selected difficulty from the engine recommendation', () => {
-    renderGame();
-    // 'hard' -> the Hard button is the active (btn-primary) one on the start screen.
-    const hardBtn = screen.getByRole('button', { name: /hard/i });
-    expect(hardBtn.className).toContain('btn-primary');
   });
 
   it('records an attempt with the addition skill after an answer', async () => {
     const user = userEvent.setup();
     renderGame();
-    await user.click(screen.getByRole('button', { name: /start match/i }));
+    await user.click(screen.getByRole('button', { name: /start session/i }));
 
-    // After Start, the answer input is present; type any value and submit (Enter).
-    const input = await screen.findByPlaceholderText('?');
-    await user.type(input, '7{enter}');
+    // After starting, the numeric answer input appears; enter a value and submit.
+    const input = await screen.findByPlaceholderText('0');
+    await user.type(input, '7');
+    await user.click(screen.getByRole('button', { name: /check answer/i }));
 
     expect(recordAttempt).toHaveBeenCalledTimes(1);
     const arg = recordAttempt.mock.calls[0][0];

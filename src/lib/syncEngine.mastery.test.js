@@ -5,6 +5,7 @@ vi.mock('./db', () => ({
   getAllSyncQueueItems: vi.fn(),
   removeSyncQueueItem: vi.fn(async () => {}),
   incrementSyncRetry: vi.fn(async () => {}),
+  flushPendingSyncWrites: vi.fn(async () => {}),
 }));
 
 import { getAllSyncQueueItems, removeSyncQueueItem } from './db';

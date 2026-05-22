@@ -2,19 +2,26 @@ import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 
-function genQ() {
-  const a=Math.floor(Math.random()*9)+2;
-  const b=Math.floor(Math.random()*9)+2;
+function genQ(grade) {
+  const min = grade <= 2 ? 1 : 2;
+  const max = grade <= 2 ? 5 : grade === 3 ? 9 : grade === 4 ? 11 : grade === 5 ? 13 : 14;
+  const a=Math.floor(Math.random()*(max - min + 1))+min;
+  const b=Math.floor(Math.random()*(max - min + 1))+min;
   return {a,b,answer:a*b};
 }
 
 export default function MathRacing() {
-  const [q,setQ]=useState(genQ());
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const baseTime = grade >= 4 ? 50 : 60;
+  const [q,setQ]=useState(genQ(grade));
   const [input,setInput]=useState('');
   const [cartPos,setCartPos]=useState(0);
   const [score,setScore]=useState(0);
-  const [timeLeft,setTimeLeft]=useState(60);
+  const [timeLeft,setTimeLeft]=useState(baseTime);
   const [gameState,setGameState]=useState('playing');
   const [feedback,setFeedback]=useState(null);
   const {addXP}=usePlayerStore();
@@ -30,7 +37,7 @@ export default function MathRacing() {
   useEffect(()=>{
     if(cartPos>=MAX)setGameState('won');
   },[cartPos]);
-  useEffect(()=>{if(gameState!=='playing')addXP(score+cartPos,'Math Racing',score+cartPos,Math.min(100,score));},[gameState]);
+  useEffect(()=>{if(gameState!=='playing')addXP(score+cartPos,'Math Racing',score+cartPos,Math.min(100,score),'Arithmetic');},[gameState]);
 
   const handleSubmit=(e)=>{
     e.preventDefault();
@@ -44,7 +51,7 @@ export default function MathRacing() {
       setFeedback({text:`❌ ${q.a}×${q.b}=${q.answer}`,correct:false});
     }
     setInput('');
-    setTimeout(()=>{setFeedback(null);setQ(genQ());},500);
+    setTimeout(()=>{setFeedback(null);setQ(genQ(grade));},500);
   };
 
   return(
@@ -52,7 +59,7 @@ export default function MathRacing() {
       <div className="w-full max-w-md mb-4 flex items-center justify-between">
         <Link to="/student" className="btn btn-glass btn-sm">← Back</Link>
         <h1 className="font-display text-xl font-bold text-gradient-orange">🐂 Math Racing</h1>
-        <div className="badge badge-orange text-xs">Grade 3</div>
+        <div className="badge badge-orange text-xs">Grade {grade}</div>
       </div>
       <div className="w-full max-w-md glass-panel p-3 mb-4 flex items-center justify-between">
         <div className="hud-chip text-yellow-400">Score: {score}</div>
@@ -112,7 +119,7 @@ export default function MathRacing() {
           <h2 className="font-display text-3xl font-bold mb-3">{gameState==='won'?'Winner!':'Times Up!'}</h2>
           <p className="text-slate-300 mb-6">Score: <strong className="text-primary">{score}</strong></p>
           <div className="flex gap-3">
-            <button onClick={()=>{setScore(0);setTimeLeft(60);setCartPos(0);setGameState('playing');setQ(genQ());setInput('');}} className="btn btn-primary flex-1">🔄 Race Again</button>
+            <button onClick={()=>{setScore(0);setTimeLeft(baseTime);setCartPos(0);setGameState('playing');setQ(genQ(grade));setInput('');}} className="btn btn-primary flex-1">🔄 Race Again</button>
             <Link to="/student" className="btn btn-glass flex-1 no-underline">🏘️ Village</Link>
           </div>
         </motion.div>

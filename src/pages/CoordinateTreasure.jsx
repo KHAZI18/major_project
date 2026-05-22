@@ -2,11 +2,19 @@ import { useState, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 
-const GRID_SIZE=8;
+function getGridSize(grade) {
+  if (grade <= 2) return 4;
+  if (grade === 3) return 6;
+  if (grade === 4) return 7;
+  if (grade === 5) return 10;
+  return 12;
+}
 
-function genTreasure(){
-  return {x:Math.floor(Math.random()*GRID_SIZE),y:Math.floor(Math.random()*GRID_SIZE)};
+function genTreasure(gridSize){
+  return {x:Math.floor(Math.random()*gridSize),y:Math.floor(Math.random()*gridSize)};
 }
 
 function genClue(treasure){
@@ -14,14 +22,18 @@ function genClue(treasure){
 }
 
 export default function CoordinateTreasure() {
-  const [treasure,setTreasure]=useState(genTreasure());
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const gridSize = getGridSize(grade);
+  const totalRounds = grade <= 2 ? 4 : grade === 3 ? 6 : grade === 4 ? 7 : 9;
+  const [treasure,setTreasure]=useState(genTreasure(gridSize));
   const [selected,setSelected]=useState(null);
   const [score,setScore]=useState(0);
   const [round,setRound]=useState(1);
   const [gameState,setGameState]=useState('playing');
   const [feedback,setFeedback]=useState(null);
   const {addXP}=usePlayerStore();
-  const TOTAL=6;
+  const TOTAL=totalRounds;
 
   const handleClick=(x,y)=>{
     if(selected)return;
@@ -33,8 +45,8 @@ export default function CoordinateTreasure() {
       setFeedback({text:`❌ Treasure was at (${treasure.x},${treasure.y})`,correct:false});
     }
     setTimeout(()=>{
-      const nt=genTreasure();
-      if(round>=TOTAL){setGameState('won');addXP(score+(correct?30:0),'Coordinate Treasure',score,Math.min(100,score));}
+      const nt=genTreasure(gridSize);
+      if(round>=TOTAL){setGameState('won');addXP(score+(correct?30:0),'Coordinate Treasure',score,Math.min(100,score),'Coordinates');}
       else{setRound(r=>r+1);setTreasure(nt);setSelected(null);setFeedback(null);}
     },1200);
   };
@@ -44,7 +56,7 @@ export default function CoordinateTreasure() {
       <div className="w-full max-w-lg mb-4 flex items-center justify-between">
         <Link to="/student" className="btn btn-glass btn-sm">← Back</Link>
         <h1 className="font-display text-xl font-bold text-gradient-orange">🗺️ Treasure Map</h1>
-        <div className="badge badge-warning text-xs">Grade 5</div>
+        <div className="badge badge-warning text-xs">Grade {grade}</div>
       </div>
       <div className="w-full max-w-lg glass-panel p-3 mb-4 flex items-center justify-between">
         <div className="hud-chip text-yellow-400">Score: {score}</div>
@@ -62,10 +74,10 @@ export default function CoordinateTreasure() {
           {/* Grid */}
           <div className="glass-panel p-4 overflow-auto">
             <div className="flex flex-col-reverse">
-              {Array.from({length:GRID_SIZE+1},(_,y)=>(
+              {Array.from({length:gridSize+1},(_,y)=>(
                 <div key={y} className="flex items-center">
                   <span className="text-slate-500 text-xs w-5 text-right mr-1 shrink-0">{y}</span>
-                  {Array.from({length:GRID_SIZE+1},(_,x)=>{
+                  {Array.from({length:gridSize+1},(_,x)=>{
                     const isSelected=selected&&selected.x===x&&selected.y===y;
                     const isTreasure=selected&&treasure.x===x&&treasure.y===y;
                     return(
@@ -84,7 +96,7 @@ export default function CoordinateTreasure() {
                 </div>
               ))}
               <div className="flex ml-6">
-                {Array.from({length:GRID_SIZE+1},(_,x)=>(
+                {Array.from({length:gridSize+1},(_,x)=>(
                   <span key={x} className="text-slate-500 text-xs w-10 text-center">{x}</span>
                 ))}
               </div>
@@ -108,7 +120,7 @@ export default function CoordinateTreasure() {
           <h2 className="font-display text-3xl font-bold mb-3">Treasure Found!</h2>
           <p className="text-slate-300 mb-6">Score: <strong className="text-primary">{score}</strong></p>
           <div className="flex gap-3">
-            <button onClick={()=>{setScore(0);setRound(1);setGameState('playing');setTreasure(genTreasure());setSelected(null);}} className="btn btn-village flex-1">🗺️ New Map</button>
+            <button onClick={()=>{setScore(0);setRound(1);setGameState('playing');setTreasure(genTreasure(gridSize));setSelected(null);}} className="btn btn-village flex-1">🗺️ New Map</button>
             <Link to="/student" className="btn btn-glass flex-1 no-underline">🏘️ Village</Link>
           </div>
         </motion.div>

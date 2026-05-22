@@ -29,11 +29,11 @@ export default function BadgeDisplay({ compact = false }) {
   }
 
   return (
-    <div className="glass-panel p-5">
+    <div className="bg-white rounded-3xl p-5 mb-6 shadow-sm border border-slate-100">
       <div className="flex items-center gap-2 mb-4">
         <span className="text-xl">🏅</span>
-        <h3 className="font-display font-bold text-lg">Achievements</h3>
-        <span className="ml-auto badge badge-gold text-xs">{badges.length}/{allBadgesMeta.length} unlocked</span>
+        <h3 className="font-display font-bold text-lg text-slate-800">Achievements</h3>
+        <span className="ml-auto bg-primary/20 text-yellow-700 font-bold px-3 py-1 rounded-full text-xs">{badges.length}/{allBadgesMeta.length} unlocked</span>
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
@@ -47,15 +47,15 @@ export default function BadgeDisplay({ compact = false }) {
               transition={{ delay: i * 0.04 }}
               className={`flex flex-col items-center gap-1.5 p-3 rounded-xl border text-center transition-all ${
                 isUnlocked
-                  ? 'bg-yellow-500/10 border-yellow-500/30 text-yellow-400'
-                  : 'bg-white/3 border-white/8 text-slate-600 grayscale'
+                  ? 'bg-orange-50 border-orange-200 text-orange-600'
+                  : 'bg-slate-50 border-slate-200 text-slate-400 grayscale opacity-70'
               }`}
               title={badge.desc}
             >
               <span className="text-2xl">{badge.icon}</span>
               <span className="text-xs font-semibold leading-tight">{isUnlocked ? badge.label : '???'}</span>
-              {isUnlocked && <span className="text-[10px] text-yellow-600">{badge.desc}</span>}
-              {!isUnlocked && <div className="text-[10px] text-slate-600">🔒 Locked</div>}
+              {isUnlocked && <span className="text-[10px] text-orange-500 font-medium">{badge.desc}</span>}
+              {!isUnlocked && <div className="text-[10px] text-slate-400">🔒 Locked</div>}
             </motion.div>
           );
         })}

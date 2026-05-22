@@ -2,26 +2,33 @@ import { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 import { recordAttempt } from '../engine/engineAPI';
 import { skillForGame } from '../engine/gameSkills';
 
 const SKILL = skillForGame('MultiplicationFarm'); // 'multiplication'
 
-function genQ() {
-  const rows=Math.floor(Math.random()*8)+2;
-  const cols=Math.floor(Math.random()*8)+2;
+function genQ(grade) {
+  const min = grade <= 2 ? 2 : grade <= 4 ? 2 : 3;
+  const max = grade <= 2 ? 5 : grade === 3 ? 8 : grade === 4 ? 10 : 14;
+  const rows=Math.floor(Math.random()*(max - min + 1))+min;
+  const cols=Math.floor(Math.random()*(max - min + 1))+min;
   return {rows,cols,answer:rows*cols};
 }
 
 export default function MultiplicationFarm() {
-  const [q,setQ]=useState(genQ());
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const totalRounds = grade >= 4 ? 10 : 8;
+  const [q,setQ]=useState(genQ(grade));
   const [selected,setSelected]=useState(null);
   const [score,setScore]=useState(0);
   const [round,setRound]=useState(1);
   const [gameState,setGameState]=useState('playing');
   const [feedback,setFeedback]=useState(null);
   const {addXP}=usePlayerStore();
-  const TOTAL_ROUNDS=8;
+  const TOTAL_ROUNDS=totalRounds;
 
   const choices=()=>{
     const ans=q.answer;
@@ -43,8 +50,8 @@ export default function MultiplicationFarm() {
       setFeedback({text:`❌ ${q.rows}×${q.cols}=${q.answer}`,correct:false});
     }
     setTimeout(()=>{
-      if(round>=TOTAL_ROUNDS){setGameState('won');addXP(score+(n===q.answer?20:0),'Multiplication Farm',score,Math.min(100,score));}
-      else{setRound(r=>r+1);setQ(genQ());setSelected(null);setFeedback(null);setOpts(choices());}
+      if(round>=TOTAL_ROUNDS){setGameState('won');addXP(score+(n===q.answer?20:0),'Multiplication Farm',score,Math.min(100,score),'Multiplication');}
+      else{setRound(r=>r+1);setQ(genQ(grade));setSelected(null);setFeedback(null);setOpts(choices());}
     },900);
   };
 
@@ -56,7 +63,7 @@ export default function MultiplicationFarm() {
       <div className="w-full max-w-lg mb-4 flex items-center justify-between">
         <Link to="/student" className="btn btn-glass btn-sm">← Back</Link>
         <h1 className="font-display text-xl font-bold text-gradient-green">🌻 Multiplication Farm</h1>
-        <div className="badge badge-success text-xs">Grade 3</div>
+        <div className="badge badge-success text-xs">Grade {grade}</div>
       </div>
       <div className="w-full max-w-lg glass-panel p-3 mb-4 flex items-center justify-between">
         <div className="hud-chip text-yellow-400">Score: {score}</div>
@@ -114,7 +121,7 @@ export default function MultiplicationFarm() {
           <h2 className="font-display text-3xl font-bold mb-3">Harvest Complete!</h2>
           <p className="text-slate-300 mb-6">Score: <strong className="text-primary">{score}</strong></p>
           <div className="flex gap-3">
-            <button onClick={()=>{setScore(0);setRound(1);setGameState('playing');setQ(genQ());setSelected(null);setFeedback(null);}} className="btn btn-success flex-1">🌱 New Farm</button>
+            <button onClick={()=>{setScore(0);setRound(1);setGameState('playing');setQ(genQ(grade));setSelected(null);setFeedback(null);}} className="btn btn-success flex-1">🌱 New Farm</button>
             <Link to="/student" className="btn btn-glass flex-1 no-underline">🏘️ Village</Link>
           </div>
         </motion.div>

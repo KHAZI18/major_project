@@ -4,6 +4,18 @@ const DB_NAME = 'math_village_db';
 const DB_VERSION = 2;
 
 let dbPromise = null;
+const pendingSyncWrites = new Set();
+
+export function trackSyncWrite(promise) {
+  pendingSyncWrites.add(promise);
+  promise.finally(() => pendingSyncWrites.delete(promise));
+  return promise;
+}
+
+export async function flushPendingSyncWrites() {
+  if (pendingSyncWrites.size === 0) return;
+  await Promise.allSettled([...pendingSyncWrites]);
+}
 
 export function getDB() {
   if (!dbPromise) {
@@ -53,14 +65,14 @@ export function getDB() {
 
 // ─── Progress ─────────────────────────────────────────────────────────────────
 
-export async function saveProgress(data) {
+export async function saveProgress(userId, data) {
   const db = await getDB();
-  await db.put('student_progress', { id: 'local', ...data });
+  await db.put('student_progress', { id: userId, ...data });
 }
 
-export async function loadProgress() {
+export async function loadProgress(userId) {
   const db = await getDB();
-  return db.get('student_progress', 'local');
+  return db.get('student_progress', userId);
 }
 
 // ─── Sync Queue ────────────────────────────────────────────────────────────────

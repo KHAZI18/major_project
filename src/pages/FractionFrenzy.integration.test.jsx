@@ -11,6 +11,9 @@ vi.mock('../engine/engineAPI', () => ({
   recordAttempt: (...a) => recordAttempt(...a),
   getNextDifficulty: () => 'easy',
 }));
+vi.mock('../store/useAuthStore', () => ({
+  useAuthStore: () => ({ user: { name: 'Test Student', grade: 3 } }),
+}));
 
 import FractionFrenzy from './FractionFrenzy';
 
@@ -25,8 +28,10 @@ describe('FractionFrenzy engine integration', () => {
       </MemoryRouter>
     );
 
-    // The game starts immediately (no start screen); the four fraction options are buttons.
-    // Click the first answer option (the numerator/denominator buttons render as button roles).
+    // The redesigned game has a start screen — begin the challenge first.
+    await user.click(screen.getByRole('button', { name: /start challenge/i }));
+
+    // The four answer options render as ChoiceCard buttons (rounded-2xl).
     const optionButtons = screen.getAllByRole('button').filter((b) => b.className.includes('rounded-2xl'));
     expect(optionButtons.length).toBeGreaterThan(0);
     await user.click(optionButtons[0]);

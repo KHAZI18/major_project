@@ -2,10 +2,11 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useGamification } from '../hooks/useGamification';
 import { ChevronLeft, Scale, Award, RefreshCcw, Check, X, ShieldAlert } from 'lucide-react';
+import { useAuthStore } from '../store/useAuthStore';
+import { getGradeTier, normalizeGrade } from '../lib/gradeUtils';
 
-function generateEquation(level) {
-  // Higher level = bigger numbers
-  const maxVal = level > 3 ? 30 : 15;
+function generateEquation(level, gradeTier) {
+  const maxVal = gradeTier >= 4 ? 48 : gradeTier === 3 ? 36 : gradeTier === 2 ? 26 : 15;
   const left1 = Math.floor(Math.random() * maxVal) + 2;
   const left2 = Math.floor(Math.random() * maxVal) + 2;
   const sum = left1 + left2;
@@ -25,11 +26,14 @@ function generateEquation(level) {
 
 function EquationBalancer() {
   const { addXP } = useGamification();
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const gradeTier = getGradeTier(grade);
   const navigate = useNavigate();
 
   const [score, setScore] = useState(0);
   const [levelTracker, setLevelTracker] = useState(1);
-  const [eq, setEq] = useState(generateEquation(1));
+  const [eq, setEq] = useState(generateEquation(1, gradeTier));
   const [placed, setPlaced] = useState(null);
   const [feedback, setFeedback] = useState(null);
   
@@ -38,7 +42,7 @@ function EquationBalancer() {
     setLevelTracker(1);
     setPlaced(null);
     setFeedback(null);
-    setEq(generateEquation(1));
+    setEq(generateEquation(1, gradeTier));
   };
   
   const handleWeightClick = (val) => {
@@ -51,11 +55,11 @@ function EquationBalancer() {
       setFeedback('correct');
       setScore(s => s + 1);
       setTimeout(() => {
-        addXP(25, 'Equation Balancer', 1);
+        addXP(25, 'Equation Balancer', 1, 0, 'Algebra');
         setPlaced(null);
         setFeedback(null);
         setLevelTracker(l => l + 1);
-        setEq(generateEquation(levelTracker + 1));
+        setEq(generateEquation(levelTracker + 1, gradeTier));
       }, 1500);
     } else {
       setFeedback('wrong');

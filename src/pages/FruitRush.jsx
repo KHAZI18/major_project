@@ -2,19 +2,26 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
+import { useAuthStore } from '../store/useAuthStore';
+import { normalizeGrade } from '../lib/gradeUtils';
 
-function genQ() {
+function genQ(grade) {
   const fruits = ['🍎','🍌','🍊','🥭','🍇'];
-  const a = Math.floor(Math.random()*12)+1;
-  const b = Math.floor(Math.random()*12)+1;
+  const min = grade <= 2 ? 1 : grade <= 4 ? 3 : 8;
+  const max = grade <= 2 ? 10 : grade === 3 ? 20 : grade === 4 ? 24 : 48;
+  const a = Math.floor(Math.random() * (max - min + 1)) + min;
+  const b = Math.floor(Math.random() * (max - min + 1)) + min;
   return { a, b, answer: a+b, fruitA: fruits[Math.floor(Math.random()*fruits.length)], fruitB: fruits[Math.floor(Math.random()*fruits.length)] };
 }
 
 export default function FruitRush() {
-  const [q,setQ]=useState(genQ());
+  const { user } = useAuthStore();
+  const grade = normalizeGrade(user?.grade);
+  const baseTime = grade >= 4 ? 40 : 45;
+  const [q,setQ]=useState(genQ(grade));
   const [input,setInput]=useState('');
   const [score,setScore]=useState(0);
-  const [timeLeft,setTimeLeft]=useState(45);
+  const [timeLeft,setTimeLeft]=useState(baseTime);
   const [gameState,setGameState]=useState('playing');
   const [feedback,setFeedback]=useState(null);
   const [combo,setCombo]=useState(0);
@@ -27,7 +34,7 @@ export default function FruitRush() {
     const t=setInterval(()=>setTimeLeft(t=>{if(t<=1){setGameState('lost');return 0;}return t-1;}),1000);
     return()=>clearInterval(t);
   },[gameState]);
-  useEffect(()=>{if(gameState!=='playing')addXP(Math.floor(score/2),'Fruit Rush',score,Math.min(100,score));},[gameState]);
+  useEffect(()=>{if(gameState!=='playing')addXP(Math.floor(score/2),'Fruit Rush',score,Math.min(100,score),'Arithmetic');},[gameState]);
 
   const handleSubmit=(e)=>{
     e.preventDefault();
@@ -40,7 +47,7 @@ export default function FruitRush() {
       setCombo(0);setFeedback({text:`❌ Answer: ${q.answer}`,correct:false});
     }
     setInput('');
-    setTimeout(()=>{setFeedback(null);setQ(genQ());},500);
+    setTimeout(()=>{setFeedback(null);setQ(genQ(grade));},500);
   };
 
   return(
@@ -48,7 +55,7 @@ export default function FruitRush() {
       <div className="w-full max-w-md mb-4 flex items-center justify-between">
         <Link to="/student" className="btn btn-glass btn-sm">← Back</Link>
         <h1 className="font-display text-xl font-bold text-gradient-orange">🍎 Fruit Rush</h1>
-        <div className="badge badge-success text-xs">Grade 2-3</div>
+        <div className="badge badge-success text-xs">Grade {grade}</div>
       </div>
       <div className="w-full max-w-md glass-panel p-3 mb-4 flex items-center justify-between">
         <div className="hud-chip text-yellow-400">Score: {score}</div>
@@ -95,7 +102,7 @@ export default function FruitRush() {
           <h2 className="font-display text-3xl font-bold mb-3">{score>=80?'Excellent!':'Game Over'}</h2>
           <p className="text-slate-300 mb-6">Score: <strong className="text-primary">{score}</strong> | XP: <strong className="text-yellow-400">+{Math.floor(score/2)}</strong></p>
           <div className="flex gap-3">
-            <button onClick={()=>{setScore(0);setTimeLeft(45);setCombo(0);setGameState('playing');setQ(genQ());setInput('');}} className="btn btn-primary flex-1">🔄 Again</button>
+            <button onClick={()=>{setScore(0);setTimeLeft(baseTime);setCombo(0);setGameState('playing');setQ(genQ(grade));setInput('');}} className="btn btn-primary flex-1">🔄 Again</button>
             <Link to="/student" className="btn btn-glass flex-1 no-underline">🏘️ Village</Link>
           </div>
         </motion.div>

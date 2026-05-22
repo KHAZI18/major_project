@@ -15,6 +15,34 @@ import MasteryChart from '../components/MasteryChart';
 import BadgeDisplay from '../components/BadgeDisplay';
 import LevelUpModal from '../components/LevelUpModal';
 
+const ALL_GAMES = [
+  { id: 'arithmetic', name: 'Number Ninja', emoji: '🎯', xp: 50, path: '/games/arithmetic' },
+  { id: 'number-catcher', name: 'Number Catcher', emoji: '🥥', xp: 40, path: '/games/number-catcher' },
+  { id: 'balloon-pop', name: 'Balloon Pop', emoji: '🎈', xp: 45, path: '/games/balloon-pop' },
+  { id: 'geometry', name: 'Shape Explorer', emoji: '📐', xp: 60, path: '/games/geometry' },
+  { id: 'meteor', name: 'Multiplication Meteor', emoji: '☄️', xp: 75, path: '/games/meteor' },
+  { id: 'fractions', name: 'Fraction Frenzy', emoji: '🍕', xp: 50, path: '/games/fractions' },
+  { id: 'farm-multiply', name: 'Multiplication Farm', emoji: '🌻', xp: 65, path: '/games/farm-multiply' },
+  { id: 'math-racing', name: 'Math Racing', emoji: '🐂', xp: 70, path: '/games/math-racing' },
+  { id: 'balancer', name: 'Equation Balancer', emoji: '⚖️', xp: 75, path: '/games/balancer' },
+  { id: 'decimal-mall', name: 'Decimal Mall', emoji: '🛒', xp: 80, path: '/games/decimal-mall' },
+  { id: 'fraction-ninja', name: 'Fraction Ninja', emoji: '🥷', xp: 85, path: '/games/fraction-ninja' },
+  { id: 'patterns', name: 'Pattern Puzzle', emoji: '🧩', xp: 80, path: '/games/patterns' },
+  { id: 'coordinate-treasure', name: 'Treasure Map', emoji: '🗺️', xp: 90, path: '/games/coordinate-treasure' },
+  { id: 'integer-mountain', name: 'Integer Mountain', emoji: '🏔️', xp: 100, path: '/games/integer-mountain' },
+  { id: 'algebra-dungeon', name: 'Algebra Dungeon', emoji: '🗝️', xp: 110, path: '/games/algebra-dungeon' }
+];
+
+const GAMES_BY_ID = ALL_GAMES.reduce((acc, game) => {
+  acc[game.id] = game;
+  return acc;
+}, {});
+
+const buildGames = (ids, difficulty) => ids.map((id) => ({
+  ...GAMES_BY_ID[id],
+  difficulty
+}));
+
 const GRADE_ZONES = [
   {
     grade: 2, label: 'Grade 2', emoji: '🌾', title: 'Sunflower Farm',
@@ -22,12 +50,7 @@ const GRADE_ZONES = [
     gradient: 'linear-gradient(135deg, #92400e 0%, #78350f 50%, #451a03 100%)',
     glow: '#f59e0b', accent: '#fbbf24', textColor: '#fde68a',
     scenery: '🌻🌻🌾🌾🚜',
-    games: [
-      { id: 'arithmetic', name: 'Number Ninja', emoji: '🎯', xp: 50, path: '/games/arithmetic', difficulty: 1 },
-      { id: 'number-catcher', name: 'Number Catcher', emoji: '🥥', xp: 40, path: '/games/number-catcher', difficulty: 1 },
-      { id: 'balloon-pop', name: 'Balloon Pop', emoji: '🎈', xp: 45, path: '/games/balloon-pop', difficulty: 1 },
-      { id: 'geometry', name: 'Shape Explorer', emoji: '📐', xp: 60, path: '/games/geometry', difficulty: 2 },
-    ],
+    games: buildGames(['arithmetic', 'number-catcher', 'balloon-pop', 'geometry'], 1),
   },
   {
     grade: 3, label: 'Grade 3', emoji: '🏪', title: 'Village Market',
@@ -35,12 +58,7 @@ const GRADE_ZONES = [
     gradient: 'linear-gradient(135deg, #7c2d12 0%, #9a3412 50%, #431407 100%)',
     glow: '#f97316', accent: '#fb923c', textColor: '#fed7aa',
     scenery: '🛒🏪🌶️🥭🍎',
-    games: [
-      { id: 'meteor', name: 'Multiplication Meteor', emoji: '☄️', xp: 75, path: '/games/meteor', difficulty: 2 },
-      { id: 'fractions', name: 'Fraction Frenzy', emoji: '🍕', xp: 50, path: '/games/fractions', difficulty: 2 },
-      { id: 'farm-multiply', name: 'Multiplication Farm', emoji: '🌻', xp: 65, path: '/games/farm-multiply', difficulty: 2 },
-      { id: 'math-racing', name: 'Math Racing', emoji: '🐂', xp: 70, path: '/games/math-racing', difficulty: 2 },
-    ],
+    games: buildGames(['meteor', 'fractions', 'farm-multiply', 'math-racing'], 2),
   },
   {
     grade: 4, label: 'Grade 4', emoji: '🌊', title: 'River Crossing',
@@ -48,11 +66,7 @@ const GRADE_ZONES = [
     gradient: 'linear-gradient(135deg, #1e3a5f 0%, #1e40af 50%, #1e3a8a 100%)',
     glow: '#38bdf8', accent: '#7dd3fc', textColor: '#bae6fd',
     scenery: '🌊🐟🚤⛵🌴',
-    games: [
-      { id: 'balancer', name: 'Equation Balancer', emoji: '⚖️', xp: 75, path: '/games/balancer', difficulty: 3 },
-      { id: 'decimal-mall', name: 'Decimal Mall', emoji: '🛒', xp: 80, path: '/games/decimal-mall', difficulty: 3 },
-      { id: 'fraction-ninja', name: 'Fraction Ninja', emoji: '🥷', xp: 85, path: '/games/fraction-ninja', difficulty: 3 },
-    ],
+    games: buildGames(['decimal-mall', 'fraction-ninja', 'patterns'], 3),
   },
   {
     grade: 5, label: 'Grade 5', emoji: '🌲', title: 'Forest Camp',
@@ -60,10 +74,7 @@ const GRADE_ZONES = [
     gradient: 'linear-gradient(135deg, #14532d 0%, #166534 50%, #052e16 100%)',
     glow: '#22c55e', accent: '#4ade80', textColor: '#bbf7d0',
     scenery: '🌲🦋⛺🔭🌿',
-    games: [
-      { id: 'patterns', name: 'Pattern Puzzle', emoji: '🧩', xp: 80, path: '/games/patterns', difficulty: 3 },
-      { id: 'coordinate-treasure', name: 'Treasure Map', emoji: '🗺️', xp: 90, path: '/games/coordinate-treasure', difficulty: 3 },
-    ],
+    games: buildGames(['coordinate-treasure', 'integer-mountain'], 3),
   },
   {
     grade: 6, label: 'Grade 6', emoji: '⛰️', title: 'Mountain Peak',
@@ -71,10 +82,7 @@ const GRADE_ZONES = [
     gradient: 'linear-gradient(135deg, #2e1065 0%, #4c1d95 50%, #1e1b4b 100%)',
     glow: '#a78bfa', accent: '#c4b5fd', textColor: '#ddd6fe',
     scenery: '🏔️⛰️🗻🦅❄️',
-    games: [
-      { id: 'integer-mountain', name: 'Integer Mountain', emoji: '🏔️', xp: 100, path: '/games/integer-mountain', difficulty: 4 },
-      { id: 'algebra-dungeon', name: 'Algebra Dungeon', emoji: '🗝️', xp: 110, path: '/games/algebra-dungeon', difficulty: 4 },
-    ],
+    games: buildGames(['algebra-dungeon'], 4),
   },
 ];
 
@@ -192,7 +200,7 @@ function ZoneCard({ zone, index }) {
 }
 
 export default function StudentDashboard() {
-  const { xp, level, coins, streak, avatar, badges, history = [] } = usePlayerStore();
+  const { xp, level, coins, streak, avatar, badges, gamesPlayed, history = [], assignedSupport } = usePlayerStore();
   const { user, token, role } = useAuthStore();
   const userGrade = user?.grade || 2;
 
@@ -312,6 +320,46 @@ export default function StudentDashboard() {
             </motion.div>
           </motion.div>
 
+          {/* Teacher Recommendation Card */}
+          {assignedSupport && !assignedSupport.completed && (() => {
+            const gameObj = ALL_GAMES.find(g => g.id === assignedSupport.gameId) || ALL_GAMES[0];
+            return (
+              <motion.div 
+                initial={{ opacity: 0, scale: 0.95 }} 
+                animate={{ opacity: 1, scale: 1 }}
+                className="mb-4 p-5 rounded-[24px] bg-gradient-to-br from-[#1e293b] to-[#334155] border-2 border-amber-400 text-white shadow-[0_12px_24px_rgba(0,0,0,0.15)] relative overflow-hidden"
+              >
+                <div className="absolute right-0 top-0 bottom-0 w-32 bg-gradient-to-l from-amber-400/10 to-transparent pointer-events-none" />
+                <div className="flex items-start gap-4">
+                  <div className="text-3xl shrink-0 p-3 bg-white/10 rounded-2xl border border-white/10">
+                    💡
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-amber-400 text-[#1e293b] text-[10px] font-black uppercase tracking-wider mb-2.5">
+                      Teacher Recommendation
+                    </span>
+                    <h3 className="text-lg font-black leading-tight mb-1">Practice Mission: {gameObj.name}</h3>
+                    <p className="text-xs text-slate-300 leading-relaxed font-bold">
+                      Your teacher set up a custom practice path to help you master <span className="text-amber-400 font-extrabold">{assignedSupport.topic || 'Math Concepts'}</span>. Complete it to earn a huge reward!
+                    </p>
+                    <div className="flex flex-wrap items-center gap-4 mt-4">
+                      <Link 
+                        to={gameObj.path}
+                        className="px-5 py-2.5 bg-amber-400 text-[#1e293b] text-xs font-black rounded-xl hover:bg-white hover:scale-105 active:scale-95 transition-all shadow-sm flex items-center gap-1.5"
+                      >
+                        ⚡ Let's Play {gameObj.emoji}
+                      </Link>
+                      <div className="flex items-center gap-2">
+                        <span className="px-2.5 py-1 bg-white/10 rounded-lg text-[10px] font-black text-amber-300 uppercase tracking-widest">+100 XP</span>
+                        <span className="px-2.5 py-1 bg-white/10 rounded-lg text-[10px] font-black text-amber-300 uppercase tracking-widest">+50 Coins</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            );
+          })()}
+
           {GRADE_ZONES.map((zone, i) => (
             <ZoneCard key={zone.grade} zone={zone} index={i} />
           ))}
@@ -370,16 +418,20 @@ export default function StudentDashboard() {
                 <h3 className="font-display font-black text-sm text-[#1e293b]">Recent Games</h3>
               </div>
               <div className="p-2 space-y-1.5">
-                {history.slice(0, 5).map((h, i) => (
-                  <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.05 }}
-                    className="flex items-center gap-2 rounded-lg p-2 bg-[#F7F9FC] hover:bg-white transition-all border border-transparent hover:border-slate-100 hover:shadow-sm">
-                    <span className="text-sm">🎮</span>
-                    <span className="flex-1 text-xs text-[#1e293b] truncate font-bold">{h.gameName}</span>
-                    <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-white text-[#5EDAD0] shadow-sm whitespace-nowrap">
-                      +{h.xpEarned}
-                    </span>
-                  </motion.div>
-                ))}
+                {history.slice(0, 5).map((h, i) => {
+                  const resolvedName = h.gameName || (h.gameId && GAMES_BY_ID[h.gameId]?.name) || h.gameId || h.game || 'Game Session';
+                  const resolvedEmoji = (h.gameId && GAMES_BY_ID[h.gameId]?.emoji) || '🎮';
+                  return (
+                    <motion.div key={i} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ delay: i * 0.05 }}
+                      className="flex items-center gap-2 rounded-lg p-2 bg-[#F7F9FC] hover:bg-white transition-all border border-transparent hover:border-slate-100 hover:shadow-sm">
+                      <span className="text-sm">{resolvedEmoji}</span>
+                      <span className="flex-1 text-xs text-[#1e293b] truncate font-bold">{resolvedName}</span>
+                      <span className="text-[8px] font-black px-2 py-0.5 rounded-full bg-white text-[#5EDAD0] shadow-sm whitespace-nowrap">
+                        +{(h.xpEarned != null ? h.xpEarned : h.xp) || 0}
+                      </span>
+                    </motion.div>
+                  );
+                })}
               </div>
             </motion.div>
           )}

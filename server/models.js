@@ -21,9 +21,13 @@ const ProgressSchema = new mongoose.Schema({
   lastActive: { type: Date, default: Date.now },
   history: [{
     gameId: String,
+    gameName: String,
+    topic: String,
     score: Number,
     xpEarned: Number,
+    coinsEarned: Number,
     accuracy: Number,
+    date: String,
     timestamp: { type: Date, default: Date.now }
   }],
   achievements: [String],
@@ -33,6 +37,12 @@ const ProgressSchema = new mongoose.Schema({
   // Adaptive engine (spec §7): append-only interaction records
   // ({ skillId, correct, responseTime, timestamp }); server does not validate element shape.
   interactionLog: { type: [mongoose.Schema.Types.Mixed], default: [] },
+  assignedSupport: {
+    gameId: { type: String, default: null },
+    topic: { type: String, default: null },
+    assignedAt: { type: Date, default: null },
+    completed: { type: Boolean, default: false }
+  },
   updatedAt: { type: Date, default: Date.now }
 });
 

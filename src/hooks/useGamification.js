@@ -1,66 +1,28 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useCallback } from 'react';
+import { usePlayerStore } from '../store/usePlayerStore';
 
-const LOCAL_STORAGE_KEY = 'mathninja_user_progress';
-
-const calculateLevel = (xp) => {
-  return Math.floor(Math.sqrt(xp / 100)) + 1;
-};
-
-const getXPForNextLevel = (currentLevel) => {
-  return Math.pow(currentLevel, 2) * 100;
-};
-
-const defaultState = {
-  xp: 0,
-  level: 1,
-  gamesPlayed: 0,
-  history: []
-};
-
+// Thin compatibility shim — delegates to the central usePlayerStore so that
+// all XP gains, mission checks, and badge unlocks share a single source of truth.
 export function useGamification() {
-  const [progress, setProgress] = useState(defaultState);
+  const { xp, level, gamesPlayed, history, addXP: storeAddXP } = usePlayerStore();
 
-  useEffect(() => {
-    const saved = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (saved) {
-      try {
-        setProgress(JSON.parse(saved));
-      } catch (e) {
-        console.error('Error parsing progress', e);
-      }
-    }
+  // useCallback gives addXP a stable reference so games that put it in a
+  // useEffect dependency array (e.g. MultiplicationMeteor) don't re-run
+  // their effects on every render.
+  const addXP = useCallback((amount, gameName, score, accuracy = 0, topic = null) => {
+    storeAddXP(amount, gameName, score, accuracy, topic);
+  // storeAddXP from Zustand is already a stable reference
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const saveProgress = (newState) => {
-    setProgress(newState);
-    localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(newState));
-  };
-
-  const addXP = useCallback((amount, gameName, score) => {
-    setProgress(prevProgress => {
-      const newXp = prevProgress.xp + amount;
-      const newLevel = calculateLevel(newXp);
-      
-      const newState = {
-        ...prevProgress,
-        xp: newXp,
-        level: newLevel,
-        gamesPlayed: prevProgress.gamesPlayed + 1,
-        history: [
-          { gameName, score, xpEarned: amount, date: new Date().toISOString() },
-          ...prevProgress.history
-        ].slice(0, 50)
-      };
-      
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(newState));
-      return newState;
-    });
-  }, []);
+  const calculateLevel = (xp) => Math.floor(Math.sqrt(xp / 100)) + 1;
+  const getXPForNextLevel = (lvl) => Math.pow(lvl, 2) * 100;
 
   return {
-    progress,
+    progress: { xp, level, gamesPlayed, history },
     addXP,
-    xpToNext: getXPForNextLevel(progress.level) - progress.xp,
-    totalXpForNextLevel: getXPForNextLevel(progress.level) - getXPForNextLevel(progress.level - 1)
+    xpToNext: getXPForNextLevel(level) - xp,
+    totalXpForNextLevel: getXPForNextLevel(level) - getXPForNextLevel(level - 1),
   };
 }
+
