@@ -23,8 +23,25 @@ dist-ssr
 *.sln
 *.sw?
 
-# Env files / secrets — never commit
+# Claude Code worktrees / local settings
+.claude/
+
+# Python (synthetic data + evaluation harness)
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/synthetic/
+data/dkt_sequences.npz
+*.parquet
+*.npz
+# but DO track a tiny committed sample dataset for smoke verification
+!data/sample/
+!data/sample/*.parquet
+!data/sample/*.npz
+
+# Env files / secrets — root .env and server/.env (one .env lives in the repo root)
 .env
 
-# Seeded test-account credentials (passwords)
+# Seeded test-account credentials (contains passwords — never commit)
 seed-students-credentials.md

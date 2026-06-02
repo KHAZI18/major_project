@@ -1,10 +1,18 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+// `motion` is used as <motion.div> JSX; the repo's eslint config lacks
+// react/jsx-uses-vars so it can't detect member-expression JSX usage.
+// eslint-disable-next-line no-unused-vars
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { useAuthStore } from '../store/useAuthStore';
+import { bootstrapFromServer } from '../lib/sessionHydrate';
 import DailyMissions from '../components/DailyMissions';
-import Leaderboard from '../components/Leaderboard';
+import FairLeaderboard from '../components/FairLeaderboard';
+import SuggestedForYou from '../components/SuggestedForYou';
+import ReviewPrompts from '../components/ReviewPrompts';
+import MasteryChart from '../components/MasteryChart';
+import AdaptiveDifficulty from '../components/AdaptiveDifficulty';
 import BadgeDisplay from '../components/BadgeDisplay';
 import LevelUpModal from '../components/LevelUpModal';
 
@@ -89,7 +97,7 @@ function DifficultyDots({ level }) {
   );
 }
 
-function ZoneCard({ zone, userGrade, index }) {
+function ZoneCard({ zone, index }) {
   const isUnlocked = true; // Temporary: force unlock all zones for testing (normally userGrade >= zone.grade)
   const [expanded, setExpanded] = useState(index === 0);
 
@@ -150,7 +158,7 @@ function ZoneCard({ zone, userGrade, index }) {
             className="px-2.5 sm:px-3 pb-3 sm:pb-4 border-t border-white/60"
           >
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 sm:gap-2 mt-2 sm:mt-3">
-              {zone.games.map((game, gi) => (
+              {zone.games.map((game) => (
                 <Link key={game.id} to={game.path} className="no-underline">
                   <motion.div
                     whileHover={{ scale: 1.03, y: -3 }}
@@ -194,8 +202,19 @@ function ZoneCard({ zone, userGrade, index }) {
 
 export default function StudentDashboard() {
   const { xp, level, coins, streak, avatar, badges, gamesPlayed, history = [], assignedSupport } = usePlayerStore();
-  const { user } = useAuthStore();
+  const { user, token, role } = useAuthStore();
   const userGrade = user?.grade || 2;
+
+  // Web login: pull this student's saved progress from MongoDB and merge it into the
+  // engine (balanced with the local IndexedDB cache via initEngine), then re-render so
+  // the ML widgets below (Suggested-for-you, mastery chart, reviews) reflect it.
+  const userId = user?._id || user?.id;
+  const [, bumpHydrate] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    bootstrapFromServer(token, role, userId).then(() => { if (alive) bumpHydrate((n) => n + 1); });
+    return () => { alive = false; };
+  }, [token, role, userId]);
 
   const xpForLevel = (lvl) => Math.pow(lvl, 2) * 100;
   const xpForPrev  = (lvl) => Math.pow(Math.max(1, lvl - 1), 2) * 100;
@@ -343,33 +362,38 @@ export default function StudentDashboard() {
           })()}
 
           {GRADE_ZONES.map((zone, i) => (
-            <ZoneCard key={zone.grade} zone={zone} userGrade={userGrade} index={i} />
+            <ZoneCard key={zone.grade} zone={zone} index={i} />
           ))}
         </div>
 
         {/* RIGHT: Sidebar */}
         <div className="space-y-3 sm:space-y-4">
+          {/* 🧠 AI Suggestion (Adaptive Engine) */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
+            <SuggestedForYou />
+          </motion.div>
+
+          {/* 🔁 Spaced-repetition prompts (renders nothing when none are due) */}
+          <ReviewPrompts />
+
           {/* Daily Missions */}
           <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
             <DailyMissions />
           </motion.div>
 
-          {/* Leaderboard */}
-          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}
-            className="bg-white rounded-xl overflow-hidden border-2 border-white/80 shadow-[0_4px_12px_rgb(0,0,0,0.04)] hover:shadow-[0_6px_16px_rgb(0,0,0,0.08)] transition-all"
-          >
-            <div className="px-3 py-2.5 flex items-center justify-between border-b border-white/60 bg-gradient-to-r from-[#FFFBF0]/30 to-transparent">
-              <div className="flex items-center gap-1.5">
-                <span className="text-base drop-shadow-sm">🏆</span>
-                <h3 className="font-display font-black text-sm text-[#1e293b]">Top Players</h3>
-              </div>
-              <Link to="/student/leaderboard" className="text-[9px] font-black no-underline px-2 py-1 rounded-full bg-gradient-to-r from-[#FFE8E6] to-[#FFEDE6] text-[#FF7052] hover:from-[#FFD8CE] hover:to-[#FFDCC4] transition-all shadow-sm border border-[#FF7052]/15">
-                View All →
-              </Link>
-            </div>
-            <div className="p-2">
-              <Leaderboard compact />
-            </div>
+          {/* Fair-rank leaderboard (Adaptive Engine — replaces raw-XP widget) */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+            <FairLeaderboard compact />
+          </motion.div>
+
+          {/* Per-skill mastery mini-chart (Adaptive Engine) */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.45 }}>
+            <MasteryChart />
+          </motion.div>
+
+          {/* Adaptive difficulty meter — shows how the ML raised difficulty vs the old fixed games */}
+          <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.48 }}>
+            <AdaptiveDifficulty />
           </motion.div>
 
           {/* Badges */}

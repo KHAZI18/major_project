@@ -4,6 +4,10 @@ import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { normalizeGrade } from '../lib/gradeUtils';
+import { recordAttempt } from '../engine/engineAPI';
+import { skillForGame } from '../engine/gameSkills';
+
+const SKILL = skillForGame('DecimalMall'); // 'decimals'
 
 function genQ(grade) {
   const precision = grade >= 5 ? 3 : 2;
@@ -50,7 +54,9 @@ export default function DecimalMall() {
     const userAns=parseFloat(input);
     const correct=parseFloat(q.decimal);
     const tolerance = q.precision === 3 ? 0.002 : 0.015;
-    if(Math.abs(userAns-correct) < tolerance){
+    const isCorrect=!Number.isNaN(userAns)&&Math.abs(userAns-correct) < tolerance;
+    if(!Number.isNaN(userAns)) recordAttempt({ skillId: SKILL, correct: isCorrect, responseTime: 0 });
+    if(isCorrect){
       const pts=15+combo*3;setScore(s=>s+pts);setCombo(c=>c+1);
       setFeedback({text:`✅ Correct! +${pts}`,correct:true});
     }else{

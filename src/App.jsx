@@ -3,7 +3,8 @@ import { useEffect } from 'react';
 import { useAuthStore } from './store/useAuthStore';
 import { useSyncStore } from './store/useSyncStore';
 import { usePlayerStore } from './store/usePlayerStore';
-import { processSyncQueue } from './lib/syncEngine';
+import { initSyncEngine, processSyncQueue } from './lib/syncEngine';
+import { initEngine } from './engine/engineAPI';
 
 // Layout & Global
 import Navbar from './components/Navbar';
@@ -58,6 +59,8 @@ function App() {
   const { hydrate } = usePlayerStore();
 
   useEffect(() => {
+    // Init offline sync engine
+    initSyncEngine(setStatus);
     // If the user clicked Sync, reload first and then process the queue once.
     if (sessionStorage.getItem('mv_sync_after_reload') === '1') {
       sessionStorage.removeItem('mv_sync_after_reload');
@@ -67,6 +70,8 @@ function App() {
     initListeners();
     // Hydrate player data from IndexedDB
     hydrate();
+    // Hydrate the adaptive learning engine from IndexedDB (once, at startup)
+    initEngine().catch(() => {});
   }, []);
 
   return (

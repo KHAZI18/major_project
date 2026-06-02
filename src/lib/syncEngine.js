@@ -10,6 +10,14 @@ const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
 
 let syncing = false;
 
+// Recognised offline sync operations. Both currently POST their `payload`
+// to /api/sync; the server merges fields additively (GAME_SESSION carries
+// xp/coins/..., MASTERY_UPDATE carries masteryState/interactionLog).
+export const SYNC_OP_TYPES = {
+  GAME_SESSION: 'GAME_SESSION',
+  MASTERY_UPDATE: 'MASTERY_UPDATE',
+};
+
 async function sendToAPI(operation) {
   const authData = JSON.parse(localStorage.getItem('mv_auth') || '{}');
   const token = authData.token;
@@ -24,6 +32,15 @@ async function sendToAPI(operation) {
   if (operationUserId && operationUserId !== currentUserId) {
      console.log('[SyncEngine] Operation user mismatch, dropping to prevent cross-contamination');
      return true;
+  }
+
+  // Both known op types POST their payload to /api/sync (server merges additively).
+  if (
+    operation.type !== SYNC_OP_TYPES.GAME_SESSION &&
+    operation.type !== SYNC_OP_TYPES.MASTERY_UPDATE
+  ) {
+    console.warn('[SyncEngine] Unknown op type, skipping:', operation.type);
+    return true; // drop unknown ops so they don't wedge the queue
   }
 
   try {

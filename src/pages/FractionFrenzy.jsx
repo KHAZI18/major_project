@@ -4,6 +4,10 @@ import { ChevronLeft, CircleHelp, CheckCircle2, Trophy, Flame, ArrowRightLeft, S
 import { useAuthStore } from '../store/useAuthStore';
 import { normalizeGrade } from '../lib/gradeUtils';
 import { useGamification } from '../hooks/useGamification';
+import { recordAttempt } from '../engine/engineAPI';
+import { skillForGame } from '../engine/gameSkills';
+
+const SKILL = skillForGame('FractionFrenzy'); // 'fractions-basic'
 
 const ROUND_COUNT_BY_GRADE = {
   1: 6,
@@ -255,6 +259,7 @@ export default function FractionFrenzy() {
     setSelected(key);
     const correct = currentRound.answerKey;
     const isCorrect = key === correct;
+    recordAttempt({ skillId: SKILL, correct: isCorrect, responseTime: 0 });
 
     if (isCorrect) {
       const nextScore = score + 1;

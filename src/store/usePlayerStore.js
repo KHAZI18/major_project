@@ -266,6 +266,31 @@ export const usePlayerStore = create((set, get) => {
       set({ ...DEFAULT_STATE });
     },
 
+    // ─── Hydrate from server, balanced with local cache ───────────────────
+    // Web login pulls MongoDB, but we don't blow away local (offline) progress:
+    // take the higher of local vs server for monotonic stats so un-synced play survives.
+    hydrateFromServer(p) {
+      if (!p) return;
+      set((s) => {
+        const next = {
+          ...s,
+          xp: Math.max(s.xp || 0, p.xp || 0),
+          coins: Math.max(s.coins || 0, p.coins || 0),
+          level: Math.max(s.level || 1, p.level || 1),
+          streak: Math.max(s.streak || 0, p.streak || 0),
+        };
+        get()._persist(next);
+        return next;
+      });
+    },
+
+    // ─── Reset local stats (different user logs in on this device) ─────────
+    resetLocal() {
+      const fresh = { ...DEFAULT_STATE, dailyMissions: pickDailyMissions(), dailyMissionsDate: getTodayKey() };
+      get()._persist(fresh);
+      set(fresh);
+    },
+
     // ─── Avatar ───────────────────────────────────────────────────────────
     setAvatar(avatar) {
       set((s) => {

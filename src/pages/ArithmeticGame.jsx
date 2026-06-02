@@ -4,6 +4,10 @@ import { ChevronLeft, Clock3, Trophy, Zap, Target, Sparkles, CheckCircle2, XCirc
 import { useAuthStore } from '../store/useAuthStore';
 import { normalizeGrade } from '../lib/gradeUtils';
 import { useGamification } from '../hooks/useGamification';
+import { getNextDifficulty, recordAttempt } from '../engine/engineAPI';
+import { skillForGame } from '../engine/gameSkills';
+
+const SKILL = skillForGame('ArithmeticGame'); // 'addition'
 
 const ROUND_COUNT_BY_GRADE = { 1: 8, 2: 8, 3: 9, 4: 10, 5: 11, 6: 12 };
 const OPERATOR_LABELS = {
@@ -115,6 +119,9 @@ function StatCard({ label, value, sublabel, icon }) {
 export default function ArithmeticGame() {
   const inputRef = useRef(null);
   const timerRef = useRef(null);
+  // Timestamp of when the current round was shown; used to compute responseTime
+  // for the adaptive learning engine. Set when a round loads / session starts.
+  const questionStartRef = useRef(0);
 
   const { user } = useAuthStore();
   const { addXP } = useGamification();
@@ -133,6 +140,8 @@ export default function ArithmeticGame() {
   const [answer, setAnswer] = useState('');
   const [feedback, setFeedback] = useState(null);
   const [highlight, setHighlight] = useState(false);
+  // Initial difficulty is seeded from the adaptive learning engine.
+  const [difficulty, setDifficulty] = useState(() => getNextDifficulty(SKILL));
   const [round, setRound] = useState(() => createRound(grade, topics[0]));
   const [sessionSummary, setSessionSummary] = useState(null);
 
@@ -142,6 +151,7 @@ export default function ArithmeticGame() {
 
   const startSession = () => {
     const nextRound = createRound(grade, topics[0]);
+    setDifficulty(getNextDifficulty(SKILL));
     setPhase('play');
     setRoundIndex(0);
     setScore(0);
@@ -154,13 +164,16 @@ export default function ArithmeticGame() {
     setHighlight(false);
     setSessionSummary(null);
     setRound(nextRound);
+    questionStartRef.current = Date.now();
     window.setTimeout(() => inputRef.current?.focus(), 50);
   };
 
   const finishSession = () => {
     const accuracy = roundIndex === 0 ? 0 : Math.round((score / roundIndex) * 100);
     const xpEarned = Math.max(20, score * 18 + bestStreak * 12 + (accuracy >= 85 ? 30 : 0));
-    addXP(xpEarned, 'Number Ninja', score, accuracy, 'Arithmetic');
+    // `difficulty` is seeded from the adaptive learning engine (getNextDifficulty)
+    // and passed through as engine-difficulty context (ignored by the XP shim).
+    addXP(xpEarned, 'Number Ninja', score, accuracy, 'Arithmetic', difficulty);
     setSessionSummary({
       score,
       accuracy,
@@ -190,6 +203,7 @@ export default function ArithmeticGame() {
     setAnswer('');
     setHighlight(false);
     setRound(createRound(grade, nextTopic));
+    questionStartRef.current = Date.now();
     window.setTimeout(() => inputRef.current?.focus(), 25);
   };
 
@@ -199,6 +213,8 @@ export default function ArithmeticGame() {
 
     const parsed = Number(answer);
     const correct = parsed === round.answer;
+    const responseTime = Date.now() - questionStartRef.current;
+    recordAttempt({ skillId: SKILL, correct, responseTime });
     setHighlight(true);
 
     if (correct) {
