@@ -2,6 +2,7 @@ import { motion } from 'framer-motion';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { useEffect, useState } from 'react';
+import { API_BASE } from '../lib/apiBase';
 
 const RANK_STYLES = [
   'from-yellow-400 to-amber-500 text-black',
@@ -18,7 +19,7 @@ export default function Leaderboard({ compact = false }) {
   useEffect(() => {
     async function fetchLeaderboard() {
       try {
-        const res = await fetch('http://localhost:5000/api/leaderboard');
+        const res = await fetch(`${API_BASE}/leaderboard`);
         if (res.ok) {
           const data = await res.json();
           setLeaderboardData(data);

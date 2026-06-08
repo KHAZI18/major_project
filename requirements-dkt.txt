@@ -1,0 +1,12 @@
+# DKT training pipeline (off-device). Install into the project venv:
+#   venv/bin/pip install -r requirements-dkt.txt
+# Apple-Silicon note: if the plain `tensorflow` wheel fails to install on
+# Python 3.9/arm64, substitute the two macOS lines below (see scripts/README.md).
+tensorflow==2.15.0 ; platform_system != "Darwin" or platform_machine != "arm64"
+tensorflow-macos==2.15.0 ; platform_system == "Darwin" and platform_machine == "arm64"
+tensorflowjs==4.17.0
+numpy==1.26.4
+scikit-learn==1.4.2
+pandas==2.2.2
+pyarrow==16.1.0
+pytest==8.1.1

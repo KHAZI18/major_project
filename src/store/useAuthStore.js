@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { API_BASE } from '../lib/apiBase';
 import { usePlayerStore } from './usePlayerStore';
 
 const STORAGE_KEY = 'mv_auth';
@@ -22,7 +23,7 @@ export const useAuthStore = create((set, get) => ({
 
   async googleAuth(role, credential) {
     try {
-      const resp = await fetch('http://localhost:5000/api/auth/google', {
+      const resp = await fetch(`${API_BASE}/auth/google`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ credential, role }),
@@ -47,7 +48,7 @@ export const useAuthStore = create((set, get) => ({
 
   async signup(role, userData) {
     try {
-      const resp = await fetch('http://localhost:5000/api/auth/signup', {
+      const resp = await fetch(`${API_BASE}/auth/signup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...userData, role }),
@@ -78,7 +79,7 @@ export const useAuthStore = create((set, get) => ({
         return { success: true };
       }
 
-      const resp = await fetch('http://localhost:5000/api/auth/login', {
+      const resp = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: userData.email, password: userData.password }),
@@ -108,7 +109,7 @@ export const useAuthStore = create((set, get) => ({
       const state = get();
       if (!state.token) return { success: false };
       
-      const resp = await fetch('http://localhost:5000/api/auth/account', {
+      const resp = await fetch(`${API_BASE}/auth/account`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${state.token}`

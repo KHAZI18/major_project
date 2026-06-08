@@ -1,0 +1,7 @@
+# Synthetic data generator + evaluation harness (scripts/). Python 3.9 (venv is 3.9.6).
+# All pins below ship cp39 wheels.
+numpy==1.26.4
+pandas==2.2.2
+pyarrow==16.1.0
+scikit-learn==1.5.0
+pytest==8.2.2

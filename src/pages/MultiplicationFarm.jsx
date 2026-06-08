@@ -4,6 +4,10 @@ import { Link } from 'react-router-dom';
 import { usePlayerStore } from '../store/usePlayerStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { normalizeGrade } from '../lib/gradeUtils';
+import { recordAttempt } from '../engine/engineAPI';
+import { skillForGame } from '../engine/gameSkills';
+
+const SKILL = skillForGame('MultiplicationFarm'); // 'multiplication'
 
 function genQ(grade) {
   const min = grade <= 2 ? 2 : grade <= 4 ? 2 : 3;
@@ -37,7 +41,9 @@ export default function MultiplicationFarm() {
   const handleAnswer=(n)=>{
     if(selected!==null)return;
     setSelected(n);
-    if(n===q.answer){
+    const correct=n===q.answer;
+    recordAttempt({ skillId: SKILL, correct, responseTime: 0 });
+    if(correct){
       setScore(s=>s+20);
       setFeedback({text:`✅ ${q.rows}×${q.cols}=${q.answer} crops!`,correct:true});
     }else{
